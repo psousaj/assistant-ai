@@ -1,4 +1,4 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { userService } from "@/services/user-service";
 import { conversationService } from "@/services/conversation-service";
 import { whatsappService } from "@/services/whatsapp";
@@ -189,6 +189,14 @@ export const webhookRouter = new Elysia({ prefix: "/webhook" })
     },
     {
       body: whatsappWebhookPayloadSchema,
+      response: {
+        200: t.Object({
+          success: t.Boolean(),
+        }),
+        500: t.Object({
+          error: t.String(),
+        }),
+      },
       detail: {
         tags: ["Webhook"],
         summary: "Recebe mensagens do WhatsApp",

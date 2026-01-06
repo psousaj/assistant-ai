@@ -1,13 +1,19 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { itemService } from "@/services/item-service";
-import {
-  listItemsQuerySchema,
-  getItemParamsSchema,
-  getItemQuerySchema,
-  searchItemsBodySchema,
-  deleteItemParamsSchema,
-  deleteItemQuerySchema,
-} from "@/schemas";
+
+const itemModel = t.Object({
+  id: t.String({ format: "uuid" }),
+  userId: t.String({ format: "uuid" }),
+  type: t.Union([
+    t.Literal("movie"),
+    t.Literal("video"),
+    t.Literal("link"),
+    t.Literal("note"),
+  ]),
+  title: t.String(),
+  metadata: t.Any(),
+  createdAt: t.Date(),
+});
 
 export const itemsRouter = new Elysia({ prefix: "/items" })
   /**
@@ -25,7 +31,23 @@ export const itemsRouter = new Elysia({ prefix: "/items" })
       return { items };
     },
     {
-      query: listItemsQuerySchema,
+      query: t.Object({
+        userId: t.String({ format: "uuid" }),
+        type: t.Optional(
+          t.Union([
+            t.Literal("movie"),
+            t.Literal("video"),
+            t.Literal("link"),
+            t.Literal("note"),
+          ])
+        ),
+        limit: t.Optional(t.Number({ default: 20, minimum: 1, maximum: 100 })),
+      }),
+      response: {
+        200: t.Object({
+          items: t.Array(itemModel),
+        }),
+      },
       detail: {
         tags: ["Items"],
         summary: "Lista items do usuário",
@@ -50,8 +72,20 @@ export const itemsRouter = new Elysia({ prefix: "/items" })
       return { item };
     },
     {
-      params: getItemParamsSchema,
-      query: getItemQuerySchema,
+      params: t.Object({
+        id: t.String({ format: "uuid" }),
+      }),
+      query: t.Object({
+        userId: t.String({ format: "uuid" }),
+      }),
+      response: {
+        200: t.Object({
+          item: itemModel,
+        }),
+        404: t.Object({
+          error: t.String(),
+        }),
+      },
       detail: {
         tags: ["Items"],
         summary: "Busca item por ID",
@@ -75,7 +109,16 @@ export const itemsRouter = new Elysia({ prefix: "/items" })
       return { items };
     },
     {
-      body: searchItemsBodySchema,
+      body: t.Object({
+        userId: t.String({ format: "uuid" }),
+        query: t.String({ minLength: 1, maxLength: 500 }),
+        limit: t.Optional(t.Number({ default: 20, minimum: 1, maximum: 100 })),
+      }),
+      response: {
+        200: t.Object({
+          items: t.Array(itemModel),
+        }),
+      },
       detail: {
         tags: ["Items"],
         summary: "Busca semântica de items",
@@ -94,8 +137,17 @@ export const itemsRouter = new Elysia({ prefix: "/items" })
       return { success: true };
     },
     {
-      params: deleteItemParamsSchema,
-      query: deleteItemQuerySchema,
+      params: t.Object({
+        id: t.String({ format: "uuid" }),
+      }),
+      query: t.Object({
+        userId: t.String({ format: "uuid" }),
+      }),
+      response: {
+        200: t.Object({
+          success: t.Boolean(),
+        }),
+      },
       detail: {
         tags: ["Items"],
         summary: "Deleta um item",
