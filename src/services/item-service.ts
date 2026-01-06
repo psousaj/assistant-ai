@@ -1,4 +1,4 @@
-import { db } from "@/config/database";
+import { db } from "@/db";
 import { items } from "@/db/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import type { ItemType, ItemMetadata } from "@/types";
