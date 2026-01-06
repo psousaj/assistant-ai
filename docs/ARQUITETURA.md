@@ -1,484 +1,235 @@
-# Arquitetura do Personal AI Assistant (v2 – Conceitual + Detalhada)
+# Arquitetura - Nexo AI
 
-Este documento combina a arquitetura antiga com a nova visão **serverless‑friendly**, **AI‑agnostic** (Gemini hoje, Claude MCP depois) e preserva **seus schemas, modelos mentais, fluxos, cenários e casos de uso**.
+Visão geral da arquitetura do assistente pessoal WhatsApp.
 
-A ideia é: você ler isso daqui a meses e conseguir implementar sem se perder.
+## Visão Geral
 
----
-
-## 1. Visão Geral
-
-Assistente pessoal que recebe mensagens via **WhatsApp (Evolution API)**, entende o conteúdo com ajuda de um LLM (Gemini no MVP, Claude via MCP no futuro), enriquece com APIs externas (TMDB, YouTube, OpenGraph), classifica e salva tudo em um banco Postgres (JSONB para metadados flexíveis).
-
-Arquitetura em camadas:
-
-```text
-WhatsApp (Evolution)
+```
+WhatsApp (Meta API)
     ↓ Webhook
-Adapter REST (serverless-friendly)
+REST Adapter (Cloudflare Worker)
     ↓
-Services (conversation, items, enrichment, AI)
+Services Layer
+    ├── Conversation Manager
+    ├── AI Service (Claude)
+    ├── Enrichment Service
+    └── Item Service
     ↓
-PostgreSQL (Neon / Supabase / D1-like)
-    ↑
-LLM (Gemini hoje, Claude MCP depois)
+PostgreSQL (Supabase)
 ```
 
-Princípios:
+## Princípios
 
-- **Adapters são burros**: só traduzem entrada → services → resposta.
-- **Services têm toda lógica**: contexto, enrichment, classificação, persistência.
-- **Contexto é do backend**, não do modelo (para funcionar em qualquer LLM).
-- **MCP é opcional**: pode ser plugado depois, como outro adapter.
+- **Adapters são simples**: apenas traduzem requisições
+- **Services contêm lógica**: toda regra de negócio fica nos services
+- **Contexto no backend**: não dependemos de memória do LLM
+- **AI-agnostic**: funciona com qualquer LLM (Claude, Gemini, etc)
 
----
+## Camadas
 
-## 2. Arquitetura de Dados (PostgreSQL – conceitual)
+### 1. Adapters
 
-Mantendo exatamente o que você definiu, só organizando bonitinho.
+Responsáveis por comunicação externa, sem lógica de negócio.
 
-### 2.1 Tabela `items`
+**REST Adapter** (MVP):
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ items                                                      │
-├─────────────────────────────────────────────────────────────┤
-│ id: uuid (PK)                                              │
-│ user_id: text (FK) - WhatsApp number ou Auth.js user_id    │
-│ type: text - 'movie' | 'video' | 'link' | 'note' | etc     │
-│ title: text                                                │
-│ description: text?                                         │
-│ metadata: jsonb - estrutura varia por tipo                 │
-│ tags: jsonb (array) - ['terror', 'ação']                   │
-│ status: text - 'pending' | 'watched' | 'completed'         │
-│ created_at: timestamp                                      │
-│ updated_at: timestamp                                      │
-│                                                             │
-│ Indexes:                                                    │
-│ - GIN(metadata)   -- queries em JSONB                      │
-│ - GIN(tags)       -- busca por tags                        │
-│ - (user_id, type) -- filtros comuns                        │
-└─────────────────────────────────────────────────────────────┘
+- Recebe webhooks do WhatsApp
+- Expõe API REST para UI futura
+- Valida payloads e mapeia respostas
+
+**MCP Adapter** (futuro):
+
+- Expõe tools/resources MCP
+- Mapeia para os mesmos services
+
+### 2. Services
+
+Toda a lógica da aplicação.
+
+**conversation-service**:
+
+- `getOrCreateConversation(userId, chatId)`
+- `addMessage(conversationId, role, content)`
+- `getHistory(conversationId, limit)`
+- `updateState(conversationId, state, context)`
+
+**item-service**:
+
+- `createItem(userId, payload)`
+- `updateItem(id, patch)`
+- `searchItems(filters)`
+- `deleteItem(id)`
+
+**classifier-service**:
+
+- `detectType(message | url)` → tipo de conteúdo
+- `extractEntities(message)` → extrai título, ano, etc
+
+**enrichment-service**:
+
+- `enrichMovieByTitle(title)` → metadados TMDB
+- `enrichYoutubeVideo(url)` → metadados YouTube
+- `enrichLink(url)` → OpenGraph
+
+**ai-service**:
+
+- `callLLMWithContext({ message, history, context })`
+- Provider-agnostic
+
+### 3. Database
+
+PostgreSQL com JSONB para metadados flexíveis.
+
+Tabelas principais:
+
+- `users` - Usuários do sistema
+- `items` - Conteúdo salvo
+- `conversations` - Contexto de conversas
+- `messages` - Histórico de mensagens
+
+## State Machine de Conversação
+
+Mantém a experiência previsível:
+
 ```
-
-### 2.2 Tabela `conversations`
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ conversations                                              │
-├─────────────────────────────────────────────────────────────┤
-│ id: uuid (PK)                                              │
-│ user_id: text (FK)                                         │
-│ whatsapp_chat_id: text - ID do chat no WhatsApp            │
-│ state: text - estado atual da conversa                     │
-│ context: jsonb - dados temporários da conversa             │
-│ last_message_at: timestamp                                 │
-│ created_at: timestamp                                      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 2.3 Tabela `messages`
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ messages                                                   │
-├─────────────────────────────────────────────────────────────┤
-│ id: uuid (PK)                                              │
-│ conversation_id: uuid (FK)                                 │
-│ role: text - 'user' | 'assistant'                          │
-│ content: text                                              │
-│ metadata: jsonb - tool_calls, attachments, etc             │
-│ created_at: timestamp                                      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 2.4 Exemplos de `metadata` por tipo de item
-
-```ts
-// movie
-{
-  tmdb_id: 550,
-  year: 1999,
-  genres: ['Drama', 'Thriller'],
-  director: 'David Fincher',
-  rating: 8.8,
-  runtime: 139,
-  poster_url: 'https://...',
-  streaming: [
-    { provider: 'Netflix', url: 'https://...', type: 'subscription' },
-    { provider: 'Amazon', url: 'https://...', type: 'rent', price: 3.99 }
-  ],
-  download_available: false
-}
-
-// video (YouTube)
-{
-  video_id: 'dQw4w9WgXcQ',
-  channel: 'Rick Astley',
-  channel_id: 'UC...',
-  duration: 212,
-  views: 1000000000,
-  published_at: '2009-10-25',
-  thumbnail_url: 'https://...',
-  category: 'Music'
-}
-
-// link
-{
-  url: 'https://react.dev',
-  domain: 'react.dev',
-  og_title: 'React',
-  og_description: 'The library for web and native user interfaces',
-  og_image: 'https://...',
-  og_type: 'website'
-}
-
-// note (texto puro, sem enrichment)
-{
-  content: 'Lembrar de estudar hooks do React',
-  category: 'study' // inferido pelo modelo
-}
-```
-
----
-
-## 3. Camadas Lógicas (Adapters + Services)
-
-### 3.1 Adapters
-
-Responsáveis por **falar com o mundo externo**, sem lógica de negócio.
-
-- `rest-adapter` (MVP)
-  - recebe webhooks do WhatsApp (Evolution API)
-  - expõe API REST para UI futura / integração
-- `mcp-adapter` (futuro)
-  - expõe tools/resources MCP mapeando para os mesmos services
-
-Papel deles:
-
-- validar payloads de entrada
-- chamar os services certos
-- mapear output dos services para o formato esperado (WhatsApp / HTTP / MCP)
-
-### 3.2 Services (core da aplicação)
-
-Sugestão de serviços:
-
-- `conversation-service`
-
-  - `getOrCreateConversation(userId, whatsappChatId)`
-  - `addMessage(conversationId, role, content, metadata?)`
-  - `getHistory(conversationId, limit)`
-  - `updateState(conversationId, state, context?)`
-
-- `item-service`
-
-  - `createItem(userId, payload)`
-  - `updateItem(id, patch)`
-  - `deleteItem(id)`
-  - `getItemById(id)`
-  - `searchItems(filters)`
-
-- `classifier-service`
-
-  - `detectType(message | url)` → `"movie" | "video" | "link | "note"`
-  - `extractEntities(message)` → título, ano, etc.
-
-- `enrichment-service`
-
-  - `enrichMovieByTitle(title)` → `metadata.movie`
-  - `enrichMovieById(tmdbId)`
-  - `enrichYoutubeVideo(urlOuId)`
-  - `enrichLink(url)` (OpenGraph)
-
-- `ai-service`
-  - `callLLMWithContext({ userMessage, history, context })`
-  - Provider‑agnostic: hoje usa Gemini, amanhã pode usar Claude.
-
----
-
-## 4. State Machine de Conversação
-
-Mantém a experiência previsível e facilita testes.
-
-```text
 idle → awaiting_confirmation → enriching → saving → idle
   ↓                               ↓
   └────────────── error ──────────┘
 ```
 
-- `idle`: nenhuma operação pendente
-- `awaiting_confirmation`: modelo sugeriu algo, espera o "sim / não" do usuário
-- `enriching`: buscando metadata externo (TMDB, YouTube, OG)
-- `saving`: gravando `item` no banco
-- `error`: algo quebrou ou ficou inconsistente → volta para `idle` com mensagem amigável
+Estados:
 
-O `conversation-service` persiste `state` e `context` na tabela `conversations`.
+- **idle**: nenhuma operação pendente
+- **awaiting_confirmation**: aguarda resposta do usuário
+- **enriching**: buscando metadados externos
+- **saving**: gravando no banco
+- **error**: tratamento de erro, volta para idle
 
----
+## Fluxo Completo (Exemplo)
 
-## 5. Fluxo de Funcionamento (atualizado)
+### 1. Recepção de Mensagem
 
-### 5.1. Recepção de Mensagem (WhatsApp → Backend)
-
-```text
-┌─────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
-│ WhatsApp    │ --> │ REST Adapter/Worker │ --> │ Conversation Service │
-│ Evolution   │     │  /webhook/evolution │     │  getOrCreate()       │
-└─────────────┘     └──────────────────────┘     └──────────────────────┘
+```
+WhatsApp → Webhook → REST Adapter → Conversation Service
 ```
 
-- Evolution API envia `POST /webhook/evolution` para seu **endpoint serverless** (Cloudflare Worker / Lambda / etc).
-- Adapter valida payload e chama `conversation-service`.
+### 2. Processamento com AI
 
-### 5.2. Processamento com LLM (Gemini no MVP, Claude depois)
-
-Conceito antigo preservado, mas AI‑agnostic e via services.
-
-```text
-┌─────────────────┐   ┌──────────────────────┐   ┌─────────────────────┐
-│ MessageHandler  │-->| AI Service           │-->| (Opcional) MCP Tools│
-│ (usa Services)  │   │ (Gemini / Claude)    │   │ save_item, search…  │
-│ - contexto      │   │ - monta prompt       │   │ (fase Claude/MCP)   │
-│ - histórico     │   │ - injeta histórico   │   └─────────────────────┘
-└─────────────────┘   └──────────────────────┘
+```
+Conversation Service → AI Service → Claude API
+       ↓
+  (com histórico + contexto)
 ```
 
-MVP com Gemini:
+### 3. Enrichment
 
-- Adapter chama `ai-service.callLLMWithContext()`
-- Você monta o prompt descrevendo:
-  - quem é o sistema
-  - o que fazer com a mensagem do usuário
-  - quais ações ele pode pedir (salvar item, sugerir título, etc.)
-
-Futuro com Claude MCP:
-
-- Claude descobre e chama tools como:
-  - `search_items`
-  - `save_item`
-  - `enrich_metadata`
-
-### 5.3. Enrichment de Metadados
-
-Mesma lógica que você já tinha, só explicitando services:
-
-```text
-┌──────────────┐      ┌─────────────────────────────┐
-│ Classifier   │ ---> │ Enrichment Service         │
-│ detectType() │      │                             │
-└──────────────┘      │ ┌─────────┐   ┌─────────┐  │
-                      │ │ TMDB    │   │ YouTube │  │
-                      │ └─────────┘   └─────────┘  │
-                      │      ┌───────────┐         │
-                      │      │ OpenGraph │         │
-                      │      └───────────┘         │
-                      └─────────────────────────────┘
+```
+AI detecta tipo → Classifier → Enrichment Service → APIs Externas
+                                      ↓
+                                  (TMDB/YouTube/OG)
 ```
 
-### 5.4. Salvamento e Resposta
+### 4. Salvamento
 
-```text
-┌───────────────┐   ┌───────────┐   ┌──────────────────┐
-│ Item Service  │-->| Postgres  │   │ Evolution API     │
-│ create()      │   │ (Neon etc)│   │ sendMessage()     │
-└───────────────┘   └───────────┘   └──────────────────┘
-                         │
-                         ▼
-                     ┌──────────┐
-                     │ WhatsApp │
-                     └──────────┘
+```
+Enrichment completo → Item Service → PostgreSQL → Resposta para WhatsApp
 ```
 
----
+## Exemplo Concreto: Salvar Filme
 
-## 6. Exemplo de Fluxo Completo (Salvar Filme)
+**1. Usuário envia**: "clube da luta"
 
-Mantendo seu cenário, só adaptando wording para AI‑agnostic.
+**2. Webhook recebe** `POST /webhook/meta`:
 
-```text
-[Usuário no WhatsApp]
-"os sete escolhidos"
-
-[Webhook recebe]
-POST /webhook/evolution
+```json
 {
   "from": "5585999999999",
-  "body": "os sete escolhidos",
-  "messageId": "..."
+  "body": "clube da luta"
 }
-
-[REST Adapter]
-
-1. Chama ConversationService.getOrCreate(userId, chatId)
-2. Adiciona mensagem do usuário em messages
-3. Chama MessageHandler.processIncomingMessage(conversation, message)
 ```
 
-Dentro do `MessageHandler`:
+**3. Conversation Manager**:
 
-1. Recupera histórico recente (`conversation-service.getHistory()`)
-2. Chama `ai-service.callLLMWithContext()` passando:
-   - mensagem do usuário
-   - histórico
-   - instruções do sistema (ex: "Você é um assistente pessoal que classifica e salva itens (filmes, vídeos, links, notas)")
-3. O modelo detecta que provavelmente é um filme.
+- Busca ou cria conversação
+- Adiciona mensagem do usuário ao histórico
 
-### Caso com LLM + enrichment (conceito):
+**4. AI Service**:
 
-- AI responde (ou via tool/mensagem estruturada):  
-  "Acho que você está falando de um filme, vou procurar 'os sete escolhidos'."
+- Monta prompt com contexto
+- Chama Claude API
+- Claude identifica: provável filme
 
-- `classifier-service.detectType()` → `"movie"`
-- `enrichment-service.enrichMovieByTitle("os sete escolhidos")`
-  - chama `TMDBService.searchMovie("os sete escolhidos")`
-  - retorna múltiplos resultados
+**5. Classifier + Enrichment**:
 
-AI responde:
+- `detectType("clube da luta")` → "movie"
+- `enrichMovieByTitle("clube da luta")` → busca TMDB
+- Retorna múltiplos resultados
 
-```text
-"Achei 2 filmes:
+**6. AI responde ao usuário**:
 
-1. Seven Samurai (1954) - Akira Kurosawa
-2. The Magnificent Seven (2016) - Antoine Fuqua
+```
+Encontrei 2 filmes:
+1. Fight Club (1999) - David Fincher
+2. Fight Club (2011) - outro
 
-Qual deles você quer salvar?"
+Qual você quer salvar?
 ```
 
-Evolution envia essa resposta ao usuário.
+**7. Usuário responde**: "o primeiro"
 
-Usuário responde:
+**8. State machine** avança: `awaiting_confirmation` → `saving`
 
-```text
-"o de 2016"
+**9. Item Service**:
+
+- Cria item com metadata completo
+- Status: "pending"
+
+**10. Resposta final**:
+
+```
+✅ Salvei "Fight Club" (1999)
+Disponível em: Netflix, Amazon Prime
+IMDb: 8.8/10
 ```
 
-Novo ciclo:
+## MCP Integration (Futuro)
 
-- Conversa está em `state = awaiting_confirmation`
-- Handler entende que a resposta resolve a escolha
-- `enrichment-service.enrichMovieById(333484)`:
-  1. `TMDBService.getMovieDetails(333484)`
-  2. `TMDBService.getStreamingProviders(333484)`
-- `item-service.createItem()` grava o item com metadata completo.
+Quando usar Claude + MCP:
 
-Resposta final ao usuário:
+### Resources
 
-```text
-"✅ Salvei 'The Magnificent Seven' (2016).
-Disponível na Netflix e Amazon Prime!"
-```
+- `items://user/{userId}` - lista items
+- `items://user/{userId}/type/{type}` - items filtrados
 
-Tudo isso funciona com:
+### Tools
 
-- Gemini (MVP) usando lógicas via prompt + JSON output
-- Claude (futuro) usando MCP tools `search_items` e `save_item`
+- `save_item` → `item-service.createItem()`
+- `search_items` → `item-service.searchItems()`
+- `update_item_status` → `item-service.updateItem()`
 
----
+### Prompts
 
-## 7. MCP Server Integration (Futuro / Não obrigatório)
+- `categorize_item` - template classificação
+- `enrich_metadata` - template enrichment
 
-Quando você decidir usar Claude + MCP, **não muda nada nos services**. Só cria um adapter MCP.
+**Importante**: MCP é opcional e não muda os services existentes.
 
-### 7.1 Resources
+## Benefícios da Arquitetura
 
-- `items://user/{userId}`  
-  → lista todos os items do usuário
+- ✅ Desacoplada: trocar LLM não afeta services
+- ✅ Testável: services podem ser testados isoladamente
+- ✅ Escalável: cada camada pode escalar independentemente
+- ✅ Serverless-ready: funciona em Cloudflare Workers
+- ✅ Manutenível: responsabilidades claras
 
-- `items://user/{userId}/type/{type}`  
-  → items filtrados por tipo (`movie`, `video`, `link`, `note`…)
+## Limitações Cloudflare Workers
 
-### 7.2 Tools
+- CPU time: max 50ms (free) / 30s (paid)
+- Memory: 128MB
+- Request size: 100MB
 
-- `save_item`  
-  → chama `item-service.createItem()`
+**Otimizações**:
 
-- `search_items`  
-  → chama `item-service.searchItems()`
-
-- `update_item_status`  
-  → chama `item-service.updateItem(id, { status })`
-
-- `get_streaming_availability`  
-  → chama `enrichment-service.enrichMovieById()` ou um subset disso
-
-### 7.3 Prompts (conceituais)
-
-- `categorize_item`
-
-  - template para classificar items ambíguos (livro/filme/vídeo/link/nota)
-
-- `enrich_metadata`
-  - template para decidir se vale a pena chamar TMDB/YouTube/OG ou não
-
-No MVP com Gemini, isso vira somente **"prompt templates internos"** dentro do `ai-service`.  
-No futuro com Claude, viram **prompts do MCP Server**.
-
----
-
-## 8. API REST (OpenAPI) – atualizada / serverless-friendly
-
-Rotas conceituais (podem ser expostas por Fastify, Hono, Cloudflare Workers, etc).
-
-Documentação via Scalar ou outra UI em `/docs`.
-
-### 8.1 Rotas principais
-
-```text
-GET  /health                  # health check
-GET  /docs                    # Scalar / OpenAPI UI
-
-# Webhook WhatsApp (Evolution API)
-POST /webhook/evolution       # Recebe mensagens WhatsApp
-
-# Itens
-GET    /items                 # Lista items (filtros: type, tags, status, userId)
-GET    /items/:id             # Detalhes do item
-POST   /items                 # Cria item manualmente
-PATCH  /items/:id             # Atualiza item (status, tags, etc)
-DELETE /items/:id             # Deleta item
-
-POST   /items/search          # Busca avançada (full-text, filtros em metadata)
-GET    /items/stats           # Estatísticas (total por tipo, por status, etc)
-
-# Auth (se tiver painel / dashboard web)
-GET /auth/*                   # Rotas gerenciadas por Auth.js / provider escolhido
-```
-
-Essas rotas podem ser implementadas em:
-
-- Fastify + Bun (serverful ou serverless adaptado)
-- Hono + Cloudflare Workers
-- Express‑like em Lambdas
-
----
-
-## 9. Estratégia de Evolução
-
-1. **MVP (hoje)**
-
-   - Gemini como LLM principal
-   - REST Adapter + Webhook WhatsApp em Cloudflare Worker (ou Lambda)
-   - PostgreSQL serverless (Neon / Supabase)
-   - Services e schema iguais aos descritos aqui
-
-2. **Fase 2 – Dashboards / Web UI**
-
-   - Reusar as rotas `/items`, `/items/search`, `/items/stats`
-   - Auth.js para login
-   - Front React/Vue/Next ou o que você quiser
-
-3. **Fase 3 – Claude + MCP (opcional)**
-   - Adicionar MCP Server como novo adapter
-   - Expor tools/resources chamando os mesmos services
-   - Não tocar em `item-service`, `conversation-service`, `enrichment-service`
-
----
-
-## 10. Benefícios da Arquitetura
-
-- Você **não perde nada** do que já pensou (schemas, fluxos, cenários).
-- Fica **livre de fornecedor** (Gemini hoje, Claude amanhã, outro depois).
-- Funciona **em serverless** (Workers) sem precisar servidor 24/7.
-- MCP vira só mais uma camada por cima, não um acoplamento rígido.
-- Leitura futura fácil: este arquivo é o “mapa mental” do sistema.
+- Cache responses quando possível
+- Use `waitUntil()` para operações assíncronas
+- Minimize bundle size
