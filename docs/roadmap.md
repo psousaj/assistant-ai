@@ -42,11 +42,39 @@ Planejamento de implementação do projeto em fases.
 
 ---
 
-## ✅ Phase 2: WhatsApp Integration (Semana 1-2) - **COMPLETO**
+## ✅ Phase 2: Multi-Provider Architecture (Semana 1-2) - **COMPLETO**
 
-**Objetivo:** Receber e responder mensagens WhatsApp
+**Objetivo:** Integração com Telegram (padrão) + arquitetura preparada para múltiplos providers
 
 ### Tasks
+
+- [x] **2.1 Adapter Layer**
+
+  - [x] Criar interface `MessagingProvider`
+  - [x] Implementar `TelegramAdapter` (padrão)
+  - [x] Implementar `WhatsAppAdapter` (feature futura)
+  - [x] Normalizar webhooks via `IncomingMessage`
+
+- [x] **2.2 Multi-Provider Schema**
+
+  - [x] Criar tabela `user_accounts` (provider + externalId)
+  - [x] Refatorar `users` como entidade de domínio pura
+  - [x] Implementar detecção cross-provider por telefone
+  - [x] Migrations para banco limpo
+
+- [x] **2.3 Telegram Integration**
+  - [x] Webhook `POST /webhook/telegram`
+  - [x] Parse de mensagens Telegram Bot API
+  - [x] Envio de respostas via `sendMessage`
+  - [x] Validação opcional via `X-Telegram-Bot-Api-Secret-Token`
+
+**Entregável:** ✅ Bot Telegram funcional com unificação de usuários
+
+---
+
+## 🔄 Phase 3: WhatsApp Integration (Feature Futura)
+
+**Objetivo:** Adicionar suporte a WhatsApp quando necessário
 
 - [x] **2.1 Meta API Client**
 
@@ -457,9 +485,10 @@ Planejamento de implementação do projeto em fases.
 - [x] Items CRUD básico
 - [x] Basic search
 
-### Should Have (v0.2.0) - 🚧 **EM ANDAMENTO**
+### Should Have (v0.2.0) - � **PLANEJADO**
 
-- [ ] Claude Tools completo
+- [ ] WhatsApp integration (ativar quando necessário)
+- [ ] Dashboard web para linking manual de contas
 - [ ] Advanced error handling
 - [ ] Rate limiting
 - [ ] Caching
@@ -468,6 +497,8 @@ Planejamento de implementação do projeto em fases.
 
 ### Should Have (v0.3.0) - 📋 **PLANEJADO**
 
+- [ ] Discord integration
+- [ ] Suporte a outros providers (Slack, etc)
 - [ ] Auth multi-user
 - [ ] Advanced search (full-text)
 - [ ] Stats/analytics

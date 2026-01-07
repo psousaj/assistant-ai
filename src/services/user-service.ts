@@ -1,36 +1,86 @@
 import { db } from "@/db";
-import { users } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { users, userAccounts } from "@/db/schema";
+import { eq, and, sql } from "drizzle-orm";
+import type { ProviderType } from "@/adapters/messaging";
 
 export class UserService {
   /**
-   * Busca ou cria usuário por número de telefone
+   * Busca ou cria usuário baseado em conta de provider
+   *
+   * Estratégia de unificação cross-provider:
+   * 1. Busca account existente por (provider, externalId)
+   * 2. Se não existe E phoneNumber fornecido, busca account de outro provider com mesmo telefone
+   * 3. Se encontrou usuário existente, cria novo account linkado ao mesmo userId
+   * 4. Caso contrário, cria novo usuário + account
    */
-  async findOrCreateUser(phoneNumber: string, whatsappName?: string) {
-    const [existingUser] = await db
+  async findOrCreateUserByAccount(
+    externalId: string,
+    provider: ProviderType,
+    name?: string,
+    phoneNumber?: string
+  ) {
+    // 1. Busca account existente para esse provider + externalId
+    const [existingAccount] = await db
       .select()
-      .from(users)
-      .where(eq(users.phone, phoneNumber))
+      .from(userAccounts)
+      .where(
+        and(
+          eq(userAccounts.provider, provider),
+          eq(userAccounts.externalId, externalId)
+        )
+      )
       .limit(1);
 
-    if (existingUser) {
-      // Atualiza nome se fornecido e diferente
-      if (whatsappName && whatsappName !== existingUser.name) {
-        await db
-          .update(users)
-          .set({ name: whatsappName })
-          .where(eq(users.id, existingUser.id));
-        return { ...existingUser, name: whatsappName };
-      }
-      return existingUser;
+    if (existingAccount) {
+      // Account já existe, retorna usuário associado
+      const user = await this.getUserById(existingAccount.userId);
+      return { user, account: existingAccount };
     }
 
-    const [newUser] = await db
-      .insert(users)
-      .values({ phone: phoneNumber, name: whatsappName })
+    // 2. Se phoneNumber fornecido, tenta buscar usuário existente por telefone cross-provider
+    let userId: string | null = null;
+
+    if (phoneNumber) {
+      const [existingAccountByPhone] = await db
+        .select()
+        .from(userAccounts)
+        .where(sql`${userAccounts.metadata}->>'phone' = ${phoneNumber}`)
+        .limit(1);
+
+      if (existingAccountByPhone) {
+        userId = existingAccountByPhone.userId;
+      }
+    }
+
+    // 3. Se não encontrou usuário existente, cria novo
+    if (!userId) {
+      const [newUser] = await db.insert(users).values({ name }).returning();
+      userId = newUser.id;
+    }
+
+    // 4. Cria novo account linkado ao usuário
+    const metadata: Record<string, any> = {};
+    if (name) {
+      if (provider === "telegram") {
+        metadata.username = name;
+      }
+    }
+    if (phoneNumber) {
+      metadata.phone = phoneNumber;
+    }
+
+    const [newAccount] = await db
+      .insert(userAccounts)
+      .values({
+        userId,
+        provider,
+        externalId,
+        metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+      })
       .returning();
 
-    return newUser;
+    const user = await this.getUserById(userId);
+    return { user, account: newAccount };
   }
 
   async getUserById(userId: string) {

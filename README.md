@@ -1,34 +1,20 @@
 # Nexo AI
 
-# 1. Instalar dependências
+Assistente pessoal via Telegram que organiza, categoriza e enriquece automaticamente conteúdo usando IA.
 
-bun install
+v0.2.0: Dashboard web para linking manual de contas
+v0.3.0: Suporte a Discord (provider sem telefone)
+Futuro: Ativar WhatsApp quando houver demanda
 
-# 2. Configurar environment
+## 🎯 O que faz?
 
-cp .env.example .env
-
-# Edite .env com suas credenciais
-
-# 3. Setup database
-
-bun run db:generate
-bun run db:push
-
-# 4. Rodar em desenvolvimento
-
-bun run dev
-
-Assistente pessoal via WhatsApp que organiza, categoriza e enriquece automaticamente conteúdo usando IA.
-
-## ��� O que faz?
-
-Envie mensagens sobre filmes, vídeos, links ou notas pelo WhatsApp:
+Envie mensagens sobre filmes, vídeos, links ou notas pelo Telegram (ou WhatsApp):
 
 - **Identifica** o tipo de conteúdo automaticamente
 - **Enriquece** com metadados (TMDB, YouTube, OpenGraph)
 - **Organiza** e salva no PostgreSQL com busca inteligente
 - **Responde** de forma natural usando Claude AI
+- **Unifica** usuários cross-provider (mesmo telefone = mesma conta)
 
 ### Exemplos de uso
 
@@ -44,7 +30,7 @@ Bot: ✅ Fight Club (1999)
      Disponível em: Netflix, Amazon Prime
 ```
 
-## ��� Quick Start
+## 🚀 Quick Start
 
 ### 1. Instalar dependências
 
@@ -62,10 +48,11 @@ cp .env.example .env
 **Principais variáveis** (ver [docs/SETUP.md](docs/SETUP.md) para detalhes):
 
 - `DATABASE_URL` - PostgreSQL (ou Supabase)
-- `META_WHATSAPP_TOKEN` - Token do WhatsApp Business
+- `TELEGRAM_BOT_TOKEN` - Token do bot Telegram (via @BotFather)
 - `ANTHROPIC_API_KEY` - API Claude
 - `TMDB_API_KEY` - The Movie Database
 - `YOUTUBE_API_KEY` - YouTube Data API
+- (Opcional) `META_WHATSAPP_TOKEN` - WhatsApp Business (feature futura)
 
 ### 3. Setup database
 
@@ -86,16 +73,16 @@ bun run dev
 API disponível em `http://localhost:3000`  
 Documentação em `http://localhost:3000/swagger`
 
-## ��� Estrutura
+## 📁 Estrutura
 
 ```
 nexo-ai/
 ├── src/
+│   ├── adapters/        # Messaging providers (Telegram, WhatsApp)
 │   ├── config/          # Environment, database
 │   ├── db/schema/       # Drizzle schemas
 │   ├── services/        # Lógica de negócio
 │   │   ├── ai/          # Claude integration
-│   │   ├── whatsapp/    # Meta WhatsApp API
 │   │   └── enrichment/  # TMDB, YouTube, OpenGraph
 │   ├── routes/          # REST endpoints
 │   └── index.ts         # Entry point
@@ -105,18 +92,19 @@ nexo-ai/
 
 Ver [docs/ESTRUTURA.md](docs/ESTRUTURA.md) para detalhes completos.
 
-## ���️ Stack Tecnológico
+## 🛠️ Stack Tecnológico
 
-| Categoria      | Tecnologia                        |
-| -------------- | --------------------------------- |
-| **Runtime**    | Bun                               |
-| **Framework**  | Elysia                            |
-| **Database**   | PostgreSQL (Supabase)             |
-| **ORM**        | Drizzle                           |
-| **Deploy**     | Cloudflare Workers                |
-| **WhatsApp**   | Meta WhatsApp Business API        |
-| **AI**         | Claude 3.5 Sonnet (Anthropic)     |
-| **Enrichment** | TMDB, YouTube Data API, OpenGraph |
+| Categoria      | Tecnologia                         |
+| -------------- | ---------------------------------- |
+| **Runtime**    | Bun                                |
+| **Framework**  | Elysia                             |
+| **Database**   | PostgreSQL (Supabase)              |
+| **ORM**        | Drizzle                            |
+| **Deploy**     | Cloudflare Workers                 |
+| **Chat**       | Telegram Bot API (padrão)          |
+| **WhatsApp**   | Meta WhatsApp API (feature futura) |
+| **AI**         | Claude 3.5 Sonnet (Anthropic)      |
+| **Enrichment** | TMDB, YouTube Data API, OpenGraph  |
 
 ## ��� Documentação
 

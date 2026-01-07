@@ -9,10 +9,14 @@ const envSchema = z.object({
   SUPABASE_ANON_KEY: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
 
-  // Meta WhatsApp API
-  META_WHATSAPP_TOKEN: z.string(),
-  META_WHATSAPP_PHONE_NUMBER_ID: z.string(),
-  META_VERIFY_TOKEN: z.string(),
+  // Telegram Bot API (PADRÃO)
+  TELEGRAM_BOT_TOKEN: z.string(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
+
+  // Meta WhatsApp API (OPCIONAL - Feature futura)
+  META_WHATSAPP_TOKEN: z.string().optional(),
+  META_WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  META_VERIFY_TOKEN: z.string().optional(),
   META_BUSINESS_ACCOUNT_ID: z.string().optional(),
 
   // AI

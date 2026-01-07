@@ -1,34 +1,34 @@
 import { Elysia, t } from "elysia";
 import { userService } from "@/services/user-service";
 import { conversationService } from "@/services/conversation-service";
-import { whatsappService } from "@/services/whatsapp";
 import { classifierService } from "@/services/classifier-service";
 import { enrichmentService } from "@/services/enrichment";
 import { itemService } from "@/services/item-service";
 import { aiService } from "@/services/ai";
 import { env } from "@/config/env";
-
-interface WhatsappMessage {
-  from: string;
-  id: string;
-  timestamp: string;
-  text?: {
-    body: string;
-  };
-  type: string;
-}
+import {
+  whatsappAdapter,
+  telegramAdapter,
+  type MessagingProvider,
+  type IncomingMessage,
+} from "@/adapters/messaging";
 
 /**
- * Processa mensagem do WhatsApp
+ * Processa mensagem de qualquer provider (provider-agnostic)
  */
-async function processMessage(message: WhatsappMessage) {
-  if (!message.text?.body) return;
+async function processMessage(
+  incomingMsg: IncomingMessage,
+  provider: MessagingProvider
+) {
+  const messageText = incomingMsg.text;
 
-  const phoneNumber = message.from;
-  const messageText = message.text.body;
-
-  // 1. Busca ou cria usuário
-  const user = await userService.findOrCreateUser(phoneNumber);
+  // 1. Busca ou cria usuário (unificação cross-provider)
+  const { user } = await userService.findOrCreateUserByAccount(
+    incomingMsg.externalId,
+    incomingMsg.provider,
+    incomingMsg.senderName,
+    incomingMsg.phoneNumber
+  );
 
   // 2. Busca ou cria conversação
   const conversation = await conversationService.findOrCreateConversation(
@@ -143,17 +143,23 @@ async function processMessage(message: WhatsappMessage) {
     responseText
   );
 
-  // 7. Envia resposta via WhatsApp
+  // 7. Envia resposta via provider
   try {
-    await whatsappService.sendMessage(phoneNumber, responseText);
-    await whatsappService.markAsRead(message.id);
+    await provider.sendMessage(incomingMsg.externalId, responseText);
+
+    // WhatsApp-specific: mark as read
+    if (provider.getProviderName() === "whatsapp" && "markAsRead" in provider) {
+      await (provider as any).markAsRead(incomingMsg.messageId);
+    }
   } catch (error: any) {
-    console.error("Erro ao enviar mensagem WhatsApp:", error);
-    // Em dev mode, números precisam estar na lista permitida
-    // Erro 131030: Recipient phone number not in allowed list
+    console.error(
+      `Erro ao enviar mensagem via ${provider.getProviderName()}:`,
+      error
+    );
+    // WhatsApp dev mode: números na lista permitida
     if (error.message?.includes("131030")) {
       console.warn(
-        `⚠️  Número ${phoneNumber} não está na lista permitida (dev mode)`
+        `⚠️  Número ${incomingMsg.externalId} não está na lista permitida (dev mode)`
       );
       console.warn(
         "Adicione em: https://developers.facebook.com/apps > WhatsApp > Configuration"
@@ -165,10 +171,108 @@ async function processMessage(message: WhatsappMessage) {
 
 export const webhookRouter = new Elysia({ prefix: "/webhook" })
   /**
-   * GET /webhook/meta - Verificação do webhook
+   * POST /webhook/telegram - Recebe mensagens do Telegram (PADRÃO)
+   */
+  .post(
+    "/telegram",
+    async ({ body, request, set }) => {
+      try {
+        // Verifica autenticidade
+        if (!telegramAdapter.verifyWebhook(request)) {
+          set.status = 403;
+          return { error: "Forbidden" };
+        }
+
+        // Parse mensagem
+        const incomingMsg = telegramAdapter.parseIncomingMessage(body);
+
+        if (incomingMsg) {
+          await processMessage(incomingMsg, telegramAdapter);
+        }
+
+        return { ok: true }; // Telegram espera "ok: true"
+      } catch (error) {
+        console.error("Erro no webhook Telegram:", error);
+        set.status = 500;
+        return { error: "Internal error" };
+      }
+    },
+    {
+      body: t.Any(),
+      response: {
+        200: t.Object({
+          ok: t.Boolean(),
+        }),
+        403: t.Object({
+          error: t.String(),
+        }),
+        500: t.Object({
+          error: t.String(),
+        }),
+      },
+      detail: {
+        tags: ["Webhook"],
+        summary: "Recebe mensagens do Telegram (padrão)",
+        description:
+          "Webhook que recebe e processa mensagens do Telegram Bot API",
+      },
+    }
+  )
+
+  /**
+   * POST /webhook/whatsapp - Recebe mensagens do WhatsApp
+   */
+  .post(
+    "/whatsapp",
+    async ({ body, request, set }) => {
+      try {
+        // Verifica autenticidade
+        if (!whatsappAdapter.verifyWebhook(request)) {
+          set.status = 403;
+          return { error: "Forbidden" };
+        }
+
+        // Parse mensagem
+        const incomingMsg = whatsappAdapter.parseIncomingMessage(body);
+
+        if (incomingMsg) {
+          await processMessage(incomingMsg, whatsappAdapter);
+        }
+
+        return { success: true };
+      } catch (error) {
+        console.error("Erro no webhook WhatsApp:", error);
+        set.status = 500;
+        return { error: "Internal error" };
+      }
+    },
+    {
+      body: t.Any(),
+      response: {
+        200: t.Object({
+          success: t.Boolean(),
+        }),
+        403: t.Object({
+          error: t.String(),
+        }),
+        500: t.Object({
+          error: t.String(),
+        }),
+      },
+      detail: {
+        tags: ["Webhook"],
+        summary: "Recebe mensagens do WhatsApp",
+        description:
+          "Webhook que recebe e processa mensagens do WhatsApp Business API",
+      },
+    }
+  )
+
+  /**
+   * GET /webhook/whatsapp - Verificação do webhook WhatsApp
    */
   .get(
-    "/meta",
+    "/whatsapp",
     ({ query }) => {
       if (
         query["hub.mode"] === "subscribe" &&
@@ -187,51 +291,8 @@ export const webhookRouter = new Elysia({ prefix: "/webhook" })
       }),
       detail: {
         tags: ["Webhook"],
-        summary: "Verificação do webhook Meta",
+        summary: "Verificação do webhook WhatsApp",
         description: "Endpoint usado pelo Meta para verificar o webhook",
-      },
-    }
-  )
-
-  /**
-   * POST /webhook/meta - Recebe mensagens do WhatsApp
-   */
-  .post(
-    "/meta",
-    async ({ body, set }) => {
-      try {
-        // Valida e extrai mensagens
-        const entry = body.entry?.[0];
-        const changes = entry?.changes?.[0];
-        const messages = changes?.value?.messages;
-
-        if (messages && messages.length > 0) {
-          // Processa primeira mensagem (em produção, processar todas)
-          await processMessage(messages[0]);
-        }
-
-        return { success: true };
-      } catch (error) {
-        console.error("Erro no webhook:", error);
-        set.status = 500;
-        return { error: "Internal error" };
-      }
-    },
-    {
-      body: t.Any(), // Aceita qualquer payload do Meta (status updates, mensagens, etc)
-      response: {
-        200: t.Object({
-          success: t.Boolean(),
-        }),
-        500: t.Object({
-          error: t.String(),
-        }),
-      },
-      detail: {
-        tags: ["Webhook"],
-        summary: "Recebe mensagens do WhatsApp",
-        description:
-          "Webhook que recebe e processa mensagens do WhatsApp Business API",
       },
     }
   );
