@@ -1,71 +1,132 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { env } from "@/config/env";
-import type { AIResponse } from "@/types";
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
+import { GeminiProvider } from "./gemini-provider";
+import { ClaudeProvider } from "./claude-provider";
+import type { AIProvider, AIProviderType, AIResponse, Message } from "./types";
 
 /**
- * Serviço AI-agnostic que pode ser facilmente trocado
+ * Serviço AI multi-provider com fallback automático
+ *
+ * Default: Gemini (mais rápido e barato)
+ * Fallback: Claude (mais sofisticado)
  */
 export class AIService {
-  private client: Anthropic;
+  private providers: Map<AIProviderType, AIProvider>;
+  private defaultProvider: AIProviderType;
+  private currentProvider: AIProviderType;
 
-  constructor() {
-    this.client = new Anthropic({
-      apiKey: env.ANTHROPIC_API_KEY,
-    });
+  constructor(defaultProvider: AIProviderType = "gemini") {
+    this.providers = new Map();
+    this.defaultProvider = defaultProvider;
+    this.currentProvider = defaultProvider;
+
+    // Inicializa providers disponíveis
+    if (env.GOOGLE_API_KEY) {
+      this.providers.set("gemini", new GeminiProvider(env.GOOGLE_API_KEY));
+    }
+
+    if (env.ANTHROPIC_API_KEY) {
+      this.providers.set("claude", new ClaudeProvider(env.ANTHROPIC_API_KEY));
+    }
+
+    // Valida que pelo menos um provider está disponível
+    if (this.providers.size === 0) {
+      console.warn(
+        "⚠️ Nenhum provider de IA configurado! Configure GOOGLE_API_KEY ou ANTHROPIC_API_KEY"
+      );
+    }
+
+    // Valida que o provider default existe
+    if (!this.providers.has(defaultProvider)) {
+      const available = Array.from(this.providers.keys())[0];
+      if (available) {
+        console.warn(
+          `⚠️ Provider '${defaultProvider}' não disponível. Usando '${available}' como default.`
+        );
+        this.defaultProvider = available;
+        this.currentProvider = available;
+      }
+    }
   }
 
   /**
-   * Chama o LLM com contexto da conversação
+   * Chama o LLM com contexto da conversação e fallback automático
    */
   async callLLM(params: {
     message: string;
     history?: Message[];
     systemPrompt?: string;
   }): Promise<AIResponse> {
-    const { message, history = [], systemPrompt } = params;
+    const { systemPrompt, ...rest } = params;
+    const prompt = systemPrompt || this.getDefaultSystemPrompt();
 
-    const messages: Anthropic.MessageParam[] = [
-      ...history.map((msg) => ({
-        role: msg.role as "user" | "assistant",
-        content: msg.content,
-      })),
-      {
-        role: "user" as const,
-        content: message,
-      },
-    ];
-
-    try {
-      const response = await this.client.messages.create({
-        model: "claude-3-5-sonnet-20241022",
-        max_tokens: 1024,
-        system: systemPrompt || this.getDefaultSystemPrompt(),
-        messages,
-      });
-
-      const content = response.content[0];
-      if (content.type === "text") {
-        return {
-          message: content.text,
-        };
-      }
-
-      return {
-        message: "Desculpe, não consegui processar sua mensagem.",
-      };
-    } catch (error) {
-      console.error("Erro ao chamar AI:", error);
-      // Retorna mensagem padrão em vez de lançar erro
+    // Tenta com o provider atual
+    const provider = this.providers.get(this.currentProvider);
+    if (!provider) {
       return {
         message:
-          "⚠️ Serviço de IA indisponível. Configure ANTHROPIC_API_KEY no .env",
+          "⚠️ Nenhum serviço de IA disponível. Configure GOOGLE_API_KEY ou ANTHROPIC_API_KEY no .env",
       };
     }
+
+    try {
+      const response = await provider.callLLM({
+        ...rest,
+        systemPrompt: prompt,
+      });
+
+      // Se sucesso, mantém o provider atual
+      return response;
+    } catch (error) {
+      console.error(`Erro no provider ${this.currentProvider}:`, error);
+
+      // Tenta fallback para outro provider
+      const fallbackProvider = this.getFallbackProvider();
+      if (fallbackProvider) {
+        console.log(`Tentando fallback para ${fallbackProvider}...`);
+        this.currentProvider = fallbackProvider;
+        return this.callLLM({ ...rest, systemPrompt: prompt });
+      }
+
+      // Sem fallback disponível
+      return {
+        message:
+          "⚠️ Todos os serviços de IA estão indisponíveis. Tente novamente mais tarde.",
+      };
+    }
+  }
+
+  /**
+   * Retorna um provider alternativo disponível
+   */
+  private getFallbackProvider(): AIProviderType | null {
+    const available = Array.from(this.providers.keys());
+    const fallback = available.find((p) => p !== this.currentProvider);
+    return fallback || null;
+  }
+
+  /**
+   * Força o uso de um provider específico
+   */
+  setProvider(provider: AIProviderType): void {
+    if (!this.providers.has(provider)) {
+      throw new Error(`Provider '${provider}' não está configurado`);
+    }
+    this.currentProvider = provider;
+    console.log(`Provider alterado para: ${provider}`);
+  }
+
+  /**
+   * Retorna o provider ativo
+   */
+  getCurrentProvider(): AIProviderType {
+    return this.currentProvider;
+  }
+
+  /**
+   * Lista providers disponíveis
+   */
+  getAvailableProviders(): AIProviderType[] {
+    return Array.from(this.providers.keys());
   }
 
   /**
@@ -86,4 +147,6 @@ Se houver múltiplos resultados, pergunte qual o usuário quer salvar.`;
   }
 }
 
-export const aiService = new AIService();
+// Singleton com Gemini como default
+export const llmService = new AIService("gemini");
+export type { AIProvider, AIProviderType, AIResponse, Message } from "./types";

@@ -19,8 +19,9 @@ const envSchema = z.object({
   META_VERIFY_TOKEN: z.string().optional(),
   META_BUSINESS_ACCOUNT_ID: z.string().optional(),
 
-  // AI
-  ANTHROPIC_API_KEY: z.string(),
+  // AI (pelo menos um provider deve estar configurado)
+  ANTHROPIC_API_KEY: z.string().optional(),
+  GOOGLE_API_KEY: z.string().optional(),
 
   // Enrichment APIs
   TMDB_API_KEY: z.string(),

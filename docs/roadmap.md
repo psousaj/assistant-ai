@@ -113,19 +113,77 @@ Planejamento de implementação do projeto em fases.
 
 ---
 
-## ✅ Phase 3: Claude AI Integration (Semana 2) - **COMPLETO**
+## ✅ Phase 3: Multi-AI Integration (Semana 2) - **COMPLETO v0.1.0**
 
-**Objetivo:** Processar mensagens com Claude e tools
+**Objetivo:** Multi-AI provider com Gemini (default) e Claude (fallback)
+
+### Arquitetura
+
+**Provider-agnostic architecture** permite trocar LLMs sem quebrar services.
+
+```
+conversation-service → ai-service (interface)
+                            ├── gemini-provider (DEFAULT)
+                            └── claude-provider (fallback)
+```
+
+**Default: Google Gemini**
+
+- ✅ Mais rápido (flash model)
+- ✅ Mais barato ($0.075/1M tokens vs $3/1M Claude)
+- ✅ Suporte nativo a português
+- ✅ API simples e estável
+
+**Fallback: Claude**
+
+- ✅ Mais sofisticado (reasoning avançado)
+- ✅ Tool calling robusto
+- ✅ Usado automaticamente se Gemini falhar
 
 ### Tasks
 
-- [x] **3.1 Claude Client**
+- [x] **3.1 AI Provider Interface**
+
+  - [x] Service `ai/types.ts` → interface `AIProvider`
+  - [x] Types: `AIProviderType`, `Message`, `AIResponse`
+  - [x] Método `callLLM()` padronizado
+
+- [x] **3.2 Gemini Provider** (v0.1.0)
+
+  - [x] Service `ai/gemini-provider.ts`
+  - [x] Integração com Google Generative AI SDK
+  - [x] Model: `gemini-1.5-flash` (default)
+  - [x] History conversion (user/assistant → user/model)
+  - [x] Error handling (API key, rate limit)
+
+- [x] **3.3 Claude Provider** (v0.1.0)
+
+  - [x] Service `ai/claude-provider.ts`
+  - [x] Integração com Anthropic SDK
+  - [x] Model: `claude-3-5-sonnet-20241022`
+  - [x] Error handling (401, 429)
+
+- [x] **3.4 AI Service Facade** (v0.1.0)
 
   - [x] Service `ai/index.ts`
-  - [x] Função `callLLM()`
-  - [x] Tratamento de erros
+  - [x] Multi-provider manager com Map
+  - [x] Fallback automático em caso de erro
+  - [x] Métodos: `setProvider()`, `getCurrentProvider()`, `getAvailableProviders()`
+  - [x] Singleton com Gemini como default
 
-- [ ] **3.2 Tool Definitions** - **TODO v0.2.0**
+- [x] **3.5 Conversation Service Integration**
+
+  - [x] `conversation-service.ts` usa `aiService.callLLM()`
+  - [x] Manter histórico de mensagens
+  - [x] Contexto de conversação (state + context JSONB)
+
+- [x] **3.6 State Machine** (v0.1.0)
+
+  - [x] Estados: idle, awaiting_confirmation, enriching, saving, error
+  - [x] Transições entre estados
+  - [x] Salvar estado no DB (conversations.state)
+
+- [ ] **3.7 Tool Definitions** - **TODO v0.2.0**
 
   - [ ] File `ai/tools.ts`
   - [ ] Tool: `save_item`
@@ -133,24 +191,76 @@ Planejamento de implementação do projeto em fases.
   - [ ] Tool: `get_item_details`
   - [ ] Tool: `enrich_metadata`
 
-- [ ] **3.3 Tool Execution** - **TODO v0.2.0**
+- [ ] **3.8 Tool Execution** - **TODO v0.2.0**
 
-  - [ ] Executar tool calls do Claude
-  - [ ] Retornar resultados ao Claude
-  - [ ] Loop até Claude ter resposta final
+  - [ ] Executar tool calls do LLM
+  - [ ] Retornar resultados ao LLM
+  - [ ] Loop até LLM ter resposta final
 
-- [x] **3.4 Integração Message Handler**
+- [ ] **3.9 Environment Configuration** - **TODO v0.2.0**
+  - [x] `GOOGLE_API_KEY` (required se Gemini ativo)
+  - [x] `ANTHROPIC_API_KEY` (optional, fallback)
+  - [ ] Validação: pelo menos 1 provider deve estar configurado
+  - [ ] Default provider via env: `DEFAULT_AI_PROVIDER=gemini`
 
-  - [x] Enviar mensagem usuário + histórico pra Claude
-  - [x] Enviar resposta Claude pro WhatsApp
+### Exemplo de Uso
 
-- [x] **3.5 State Machine**
-  - [x] Service `conversation-service.ts`
-  - [x] Estados: idle, awaiting_confirmation, enriching, saving
-  - [x] Transições entre estados
-  - [x] Salvar estado no DB (conversations.state)
+```typescript
+import { aiService } from "@/services/ai";
 
-**Entregável:** ✅ Claude responde inteligentemente
+// Usa provider default (Gemini)
+const response = await aiService.callLLM({
+  message: "Salve o filme Inception",
+  history: previousMessages,
+  systemPrompt: "Você é um assistente...",
+});
+
+// Força uso de Claude
+aiService.setProvider("claude");
+
+// Verifica provider ativo
+console.log(aiService.getCurrentProvider()); // "claude"
+
+// Lista disponíveis
+console.log(aiService.getAvailableProviders()); // ["gemini", "claude"]
+```
+
+### Comparação de Providers
+
+| Métrica          | Gemini 1.5 Flash     | Claude 3.5 Sonnet  |
+| ---------------- | -------------------- | ------------------ |
+| **Custo Input**  | $0.075/1M tokens     | $3.00/1M tokens    |
+| **Custo Output** | $0.30/1M tokens      | $15.00/1M tokens   |
+| **Latência**     | ~300ms               | ~500ms             |
+| **Context**      | 1M tokens            | 200K tokens        |
+| **Reasoning**    | ⭐⭐⭐               | ⭐⭐⭐⭐⭐         |
+| **Tool Calling** | ✅ (básico)          | ✅ (avançado)      |
+| **Português**    | ✅ Nativo            | ✅ Excelente       |
+| **Rate Limit**   | 1500 RPM (free tier) | 50 RPM (free tier) |
+
+**Decisão:** Gemini para 90% dos casos (classificação, enrichment, respostas simples). Claude apenas para tool calling complexo ou se Gemini falhar.
+
+### Dependencies
+
+```json
+{
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@google/generative-ai": "^0.21.0"
+  }
+}
+```
+
+### Environment Variables
+
+```bash
+# .env (pelo menos 1 deve estar configurado)
+GOOGLE_API_KEY="AIza..." # Gemini API key (default)
+ANTHROPIC_API_KEY="sk-ant-..." # Claude API key (fallback)
+DEFAULT_AI_PROVIDER="gemini" # opcional, default já é gemini
+```
+
+**Entregável:** ✅ Multi-AI com Gemini (default) e Claude (fallback) implementado
 
 ---
 
@@ -549,7 +659,29 @@ await telegramAdapter.sendMessageWithButtons(chatId, "Acesse seu dashboard:", [
 
 ## 📋 Phase 6: MCP Server (Semana 3-4) - **PLANEJADO**
 
-**Objetivo:** Expor MCP protocol para Claude Desktop/CLI
+**Objetivo:** Expor MCP protocol para Claude Desktop/CLI e composição com MCP Supabase
+
+### Contexto: MCP Composition
+
+**Sim, MCP servers podem se comunicar entre si!** O Model Context Protocol suporta composição via:
+
+1. **MCP Supabase Client** - Nexo AI pode usar o [MCP oficial do Supabase](https://github.com/modelcontextprotocol/servers/tree/main/src/supabase) para queries SQL diretas
+2. **Proxy Pattern** - Nexo AI MCP age como proxy, delegando operações de DB para Supabase MCP
+3. **Multi-Server Config** - Claude Desktop conecta a ambos MCPs simultaneamente
+
+**Arquitetura Proposta:**
+
+```
+Claude Desktop
+    ├── [Nexo AI MCP] ─────→ Business Logic + AI Actions
+    └── [Supabase MCP] ────→ Direct SQL Queries (read-only)
+```
+
+**Benefícios:**
+
+- ✅ Nexo AI MCP foca em ações de negócio (`save_item`, `enrich_metadata`)
+- ✅ Supabase MCP permite SQL queries diretas (analytics, debug)
+- ✅ Claude pode escolher qual MCP usar conforme contexto
 
 ### Tasks
 
@@ -558,32 +690,79 @@ await telegramAdapter.sendMessageWithButtons(chatId, "Acesse seu dashboard:", [
   - [ ] Service `mcp/server.ts`
   - [ ] Implementar MCP protocol spec
   - [ ] Registrar no Elysia
+  - [ ] Configurar `claude_desktop_config.json` para multi-server
 
 - [ ] **6.2 MCP Resources**
 
-  - [ ] `items://user/{userId}` → lista items
-  - [ ] `items://user/{userId}/type/{type}` → filtrado
-  - [ ] Read-only access
+  - [ ] `nexo://items/user/{userId}` → lista items
+  - [ ] `nexo://items/user/{userId}/type/{type}` → filtrado por tipo
+  - [ ] `nexo://conversations/{conversationId}` → histórico de conversa
+  - [ ] Read-only access (queries complexas via Supabase MCP)
 
-- [ ] **6.3 MCP Tools**
+- [ ] **6.3 MCP Tools (Business Actions)**
 
-  - [ ] Tool: `save_item`
-  - [ ] Tool: `search_items`
-  - [ ] Tool: `update_item_status`
-  - [ ] Tool: `get_streaming_availability`
+  - [ ] Tool: `save_item` → salva item com enrichment
+  - [ ] Tool: `search_items` → busca semântica + filtros
+  - [ ] Tool: `enrich_metadata` → TMDB/YouTube/OG enrichment
+  - [ ] Tool: `classify_content` → detecta tipo de conteúdo
+  - [ ] Tool: `get_streaming_availability` → provedor streaming
+  - [ ] Tool: `update_item_status` → marca como visto/lido
+  - [ ] Tool: `recommend_similar` → sugestões baseadas em item
 
 - [ ] **6.4 MCP Prompts**
 
   - [ ] Prompt: `categorize_item` → template classificação
   - [ ] Prompt: `enrich_metadata` → template enrichment
-  - [ ] Prompt: `recommend_similar` → sugestões
+  - [ ] Prompt: `recommend_similar` → sugestões baseadas em AI
 
-- [ ] **6.5 Testing**
-  - [ ] Testar com Claude Desktop
+- [ ] **6.5 Supabase MCP Integration**
+
+  - [ ] Instalar [Supabase MCP](https://github.com/modelcontextprotocol/servers/tree/main/src/supabase)
+  - [ ] Configurar claude_desktop_config.json com ambos MCPs
+  - [ ] Documentar queries SQL úteis (analytics, debug)
+  - [ ] Exemplos de uso combinado (Nexo AI actions + Supabase queries)
+
+- [ ] **6.6 Testing**
+  - [ ] Testar com Claude Desktop (multi-server)
   - [ ] Testar com MCP CLI
-  - [ ] Documentar setup MCP
+  - [ ] Testar composição Nexo AI MCP + Supabase MCP
+  - [ ] Documentar setup MCP completo
 
-**Entregável:** MCP server funcional
+**Exemplo de Config Multi-Server:**
+
+```json
+{
+  "mcpServers": {
+    "nexo-ai": {
+      "command": "node",
+      "args": ["/path/to/nexo-ai/dist/mcp.js"]
+    },
+    "supabase": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-supabase"],
+      "env": {
+        "SUPABASE_URL": "https://xxx.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "eyJxxx..."
+      }
+    }
+  }
+}
+```
+
+**Use Cases:**
+
+- **Claude**: "Salve o filme 'Inception'" → usa `nexo-ai.save_item`
+- **Claude**: "Quantos filmes eu tenho salvos?" → usa `supabase` SQL query
+- **Claude**: "Enriqueça o filme 'Interstellar'" → usa `nexo-ai.enrich_metadata`
+- **Claude**: "Mostre items salvos nos últimos 7 dias" → usa `supabase` SQL com WHERE
+
+**Referências:**
+
+- [MCP Supabase Server](https://github.com/modelcontextprotocol/servers/tree/main/src/supabase)
+- [MCP Specification](https://modelcontextprotocol.io/docs/specification)
+- [MCP Multi-Server Config](https://modelcontextprotocol.io/docs/tools/cli#multiple-servers)
+
+**Entregável:** Nexo AI MCP + Supabase MCP funcionando em composição
 
 ---
 

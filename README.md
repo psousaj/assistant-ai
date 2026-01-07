@@ -6,6 +6,20 @@ v0.2.0: Dashboard web para linking manual de contas
 v0.3.0: Suporte a Discord (provider sem telefone)
 Futuro: Ativar WhatsApp quando houver demanda
 
+import { aiService } from "@/services/ai";
+
+// Usa Gemini (default)
+const response = await aiService.callLLM({
+message: "clube da luta",
+history: [],
+});
+
+// Força Claude
+aiService.setProvider("claude");
+
+// Verifica provider ativo
+console.log(aiService.getCurrentProvider()); // "gemini" ou "claude"
+
 ## 🎯 O que faz?
 
 Envie mensagens sobre filmes, vídeos, links ou notas pelo Telegram (ou WhatsApp):

@@ -64,9 +64,10 @@ export interface ConversationContext {
   [key: string]: any;
 }
 
-// Estrutura de resposta AI
-export interface AIResponse {
-  message: string;
-  action?: "save_item" | "search_items" | "enrich_metadata";
-  data?: any;
-}
+// Re-export AI types from ai service
+export type {
+  AIResponse,
+  Message,
+  AIProvider,
+  AIProviderType,
+} from "@/services/ai/types";

@@ -4,7 +4,7 @@ import { conversationService } from "@/services/conversation-service";
 import { classifierService } from "@/services/classifier-service";
 import { enrichmentService } from "@/services/enrichment";
 import { itemService } from "@/services/item-service";
-import { aiService } from "@/services/ai";
+import { llmService } from "@/services/ai";
 import { env } from "@/config/env";
 import {
   whatsappAdapter,
@@ -124,7 +124,7 @@ async function processMessage(
     // Nota ou mensagem genérica - usa AI
     try {
       const history = await conversationService.getHistory(conversation.id);
-      const aiResponse = await aiService.callLLM({
+      const aiResponse = await llmService.callLLM({
         message: messageText,
         history,
       });
