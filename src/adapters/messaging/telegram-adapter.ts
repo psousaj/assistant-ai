@@ -14,21 +14,30 @@ export class TelegramAdapter implements MessagingProvider {
   }
 
   parseIncomingMessage(payload: any): IncomingMessage | null {
-    const message = payload.message;
+    // Telegram Update pode ter message ou edited_message
+    const message = payload.message || payload.edited_message;
 
-    if (!message?.text) {
+    if (!message) {
       return null;
+    }
+
+    // Texto pode vir de text ou caption (fotos/vídeos/documentos)
+    const text = message.text || message.caption;
+
+    if (!text) {
+      return null; // Ignora se não houver texto
     }
 
     // Telegram usa chat.id como identificador único
     const chatId = message.chat.id.toString();
 
-    // Nome: prioriza username, fallback para first_name
+    // Nome: fallback chain
     const senderName =
+      [message.from.first_name, message.from.last_name]
+        .filter(Boolean)
+        .join(" ") ||
       message.from.username ||
-      `${message.from.first_name}${
-        message.from.last_name ? " " + message.from.last_name : ""
-      }`.trim();
+      "Usuário";
 
     // Telefone: raramente disponível (apenas se usuário compartilhou contato)
     const phoneNumber = message.contact?.phone_number;
@@ -37,7 +46,7 @@ export class TelegramAdapter implements MessagingProvider {
       messageId: message.message_id.toString(),
       externalId: chatId,
       senderName,
-      text: message.text,
+      text,
       timestamp: new Date(message.date * 1000),
       provider: "telegram",
       phoneNumber,
@@ -45,23 +54,50 @@ export class TelegramAdapter implements MessagingProvider {
   }
 
   verifyWebhook(request: Request): boolean {
-    // Telegram webhook secret (opcional)
+    // Telegram webhook secret (recomendado em produção)
     if (!this.webhookSecret) {
-      return true;
+      console.warn(
+        "⚠️ Telegram webhook sem secret_token configurado. Configure TELEGRAM_WEBHOOK_SECRET em produção."
+      );
+      return true; // Modo dev
     }
 
     const secretToken = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-    return secretToken === this.webhookSecret;
+
+    if (secretToken !== this.webhookSecret) {
+      console.error("❌ Telegram webhook secret inválido");
+      return false;
+    }
+
+    return true;
   }
 
-  async sendMessage(chatId: string, text: string): Promise<void> {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    options?: {
+      parseMode?: "MarkdownV2" | "HTML";
+      replyToMessageId?: number;
+    }
+  ): Promise<void> {
     const url = `${this.baseUrl}/bot${this.token}/sendMessage`;
 
-    const payload = {
+    const payload: any = {
       chat_id: chatId,
       text,
-      parse_mode: undefined, // Texto puro, sem Markdown/HTML
     };
+
+    // Parse mode opcional
+    if (options?.parseMode) {
+      payload.parse_mode = options.parseMode;
+    }
+
+    // Reply to message
+    if (options?.replyToMessageId) {
+      payload.reply_parameters = {
+        message_id: options.replyToMessageId,
+      };
+    }
 
     const response = await fetch(url, {
       method: "POST",
@@ -72,8 +108,10 @@ export class TelegramAdapter implements MessagingProvider {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Telegram API error: ${error}`);
+      const errorData = await response.json();
+      throw new Error(
+        `Telegram API error [${errorData.error_code}]: ${errorData.description}`
+      );
     }
   }
 
@@ -86,7 +124,7 @@ export class TelegramAdapter implements MessagingProvider {
     const payload = {
       url: webhookUrl,
       secret_token: this.webhookSecret,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "edited_message"],
     };
 
     const response = await fetch(url, {
@@ -98,9 +136,28 @@ export class TelegramAdapter implements MessagingProvider {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Telegram setWebhook error: ${error}`);
+      const errorData = await response.json();
+      throw new Error(
+        `Telegram setWebhook error [${errorData.error_code}]: ${errorData.description}`
+      );
     }
+  }
+
+  /**
+   * Valida token do bot (útil para health checks)
+   */
+  async getMe(): Promise<any> {
+    const url = `${this.baseUrl}/bot${this.token}/getMe`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(
+        `Telegram getMe error [${errorData.error_code}]: ${errorData.description}`
+      );
+    }
+
+    return response.json();
   }
 }
 

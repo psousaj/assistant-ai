@@ -198,6 +198,308 @@ Planejamento de implementação do projeto em fases.
 
 ---
 
+## 🔮 Phase 8: Telegram Web Login (Feature Futura)
+
+**Objetivo:** Permitir autenticação de usuários externos via Telegram Login Widget
+
+### Descrição Técnica
+
+O [Telegram Login Widget](https://core.telegram.org/widgets/login) permite que sites autentiquem usuários usando suas contas Telegram, oferecendo uma alternativa rápida e sem necessidade de senhas. Integração nativa e segura com o ecossistema Telegram.
+
+### Caso de Uso
+
+Usuários acessam dashboard web do Nexo AI → clicam no botão "Login com Telegram" → são redirecionados para confirmação no app Telegram → retornam autenticados com dados verificados (id, nome, foto, username).
+
+### Arquitetura Técnica
+
+#### **Backend: Configuração do Bot**
+
+1. **Registro de Domínio**
+
+   - Comando no [@BotFather](https://t.me/botfather): `/setdomain`
+   - Vincular domínio verificado ao bot (ex: `app.nexo-ai.com`)
+   - Bot deve ter nome/logo alinhados com marca
+
+2. **Estrutura de Dados**
+
+```typescript
+// Novo campo em users table
+interface User {
+  id: string;
+  telegram_id?: number; // ID Telegram vinculado
+  telegram_username?: string;
+  telegram_photo_url?: string;
+  telegram_auth_date?: Date;
+  // ... campos existentes
+}
+```
+
+3. **Endpoint de Callback**
+
+```typescript
+// routes/auth/telegram-callback.ts
+POST / PUT / auth / telegram / callback;
+
+interface TelegramAuthData {
+  id: number; // Telegram user ID
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  photo_url?: string;
+  auth_date: number; // Unix timestamp
+  hash: string; // HMAC-SHA-256 signature
+}
+
+// Validação de autenticidade
+function verifyTelegramAuth(data: TelegramAuthData): boolean {
+  // 1. Criar data-check-string ordenado alfabeticamente
+  const dataCheckString = Object.keys(data)
+    .filter((key) => key !== "hash")
+    .sort()
+    .map((key) => `${key}=${data[key]}`)
+    .join("\n");
+
+  // 2. Gerar secret key: SHA256(bot_token)
+  const secretKey = crypto
+    .createHash("sha256")
+    .update(env.TELEGRAM_BOT_TOKEN)
+    .digest();
+
+  // 3. Calcular HMAC-SHA-256
+  const hmac = crypto
+    .createHmac("sha256", secretKey)
+    .update(dataCheckString)
+    .digest("hex");
+
+  // 4. Comparar hashes
+  return hmac === data.hash;
+}
+
+// Handler
+async function handleTelegramLogin(data: TelegramAuthData) {
+  // Validar assinatura
+  if (!verifyTelegramAuth(data)) {
+    throw new Error("Invalid Telegram auth signature");
+  }
+
+  // Verificar tempo (max 24h)
+  const now = Math.floor(Date.now() / 1000);
+  if (now - data.auth_date > 86400) {
+    throw new Error("Auth data expired");
+  }
+
+  // Buscar ou criar usuário
+  let user = await db.query.users.findFirst({
+    where: eq(users.telegram_id, data.id),
+  });
+
+  if (!user) {
+    user = await userService.createFromTelegram({
+      telegram_id: data.id,
+      telegram_username: data.username,
+      name: `${data.first_name} ${data.last_name || ""}`.trim(),
+      telegram_photo_url: data.photo_url,
+      telegram_auth_date: new Date(data.auth_date * 1000),
+    });
+  }
+
+  // Gerar JWT session token
+  const token = jwt.sign({ userId: user.id }, env.JWT_SECRET, {
+    expiresIn: "7d",
+  });
+
+  return { token, user };
+}
+```
+
+#### **Frontend: Widget Integration**
+
+1. **Widget HTML Embed**
+
+```html
+<!-- Página de login -->
+<script
+  async
+  src="https://telegram.org/js/telegram-widget.js?22"
+  data-telegram-login="nexo_ai_bot"
+  data-size="large"
+  data-radius="8"
+  data-auth-url="https://app.nexo-ai.com/auth/telegram/callback"
+  data-request-access="write"
+></script>
+```
+
+**Parâmetros do Widget:**
+
+- `data-telegram-login`: username do bot (sem @)
+- `data-size`: `small` | `medium` | `large`
+- `data-radius`: border-radius customizado
+- `data-auth-url`: URL de callback (server-side)
+- `data-onauth`: callback JS (client-side alternative)
+- `data-request-access`: `write` para permitir bot enviar mensagens
+
+2. **Callback Redirect**
+
+```javascript
+// Após auth, Telegram redireciona para:
+// https://app.nexo-ai.com/auth/telegram/callback?id=123456&first_name=John&hash=abc...
+
+// Frontend captura params
+const params = new URLSearchParams(window.location.search);
+const authData = {
+  id: parseInt(params.get("id")),
+  first_name: params.get("first_name"),
+  last_name: params.get("last_name"),
+  username: params.get("username"),
+  photo_url: params.get("photo_url"),
+  auth_date: parseInt(params.get("auth_date")),
+  hash: params.get("hash"),
+};
+
+// Envia para backend validar
+fetch("/api/auth/telegram/verify", {
+  method: "POST",
+  body: JSON.stringify(authData),
+})
+  .then((res) => res.json())
+  .then(({ token }) => {
+    localStorage.setItem("auth_token", token);
+    window.location.href = "/dashboard";
+  });
+```
+
+3. **Alternative: Client-Side Callback**
+
+```html
+<script
+  async
+  src="https://telegram.org/js/telegram-widget.js?22"
+  data-telegram-login="nexo_ai_bot"
+  data-size="large"
+  data-onauth="onTelegramAuth(user)"
+></script>
+
+<script>
+  function onTelegramAuth(user) {
+    // user = { id, first_name, last_name, username, photo_url, auth_date, hash }
+    fetch("/api/auth/telegram/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(user),
+    })
+      .then((res) => res.json())
+      .then(({ token }) => {
+        localStorage.setItem("auth_token", token);
+        window.location.href = "/dashboard";
+      });
+  }
+</script>
+```
+
+#### **Security Considerations**
+
+1. **HMAC Verification**
+
+   - SEMPRE validar hash usando SHA256(bot_token)
+   - Rejeitar se assinatura inválida
+
+2. **Timestamp Validation**
+
+   - Verificar `auth_date` (máx 24h)
+   - Prevenir replay attacks
+
+3. **HTTPS Required**
+   - Widget só funciona em HTTPS
+   - Exceção: `localhost` para dev
+
+#### **Database Migration**
+
+```sql
+-- Migration: add telegram auth fields
+ALTER TABLE users
+ADD COLUMN telegram_id BIGINT UNIQUE,
+ADD COLUMN telegram_username TEXT,
+ADD COLUMN telegram_photo_url TEXT,
+ADD COLUMN telegram_auth_date TIMESTAMP;
+
+CREATE INDEX idx_users_telegram_id ON users(telegram_id);
+```
+
+### Dependencies
+
+```json
+{
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2" // Para session tokens
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.5"
+  }
+}
+```
+
+### Environment Variables
+
+```bash
+# .env
+JWT_SECRET="your-random-secret-key"
+TELEGRAM_BOT_TOKEN="123456:ABC-DEF..." # Já existe
+APP_URL="https://app.nexo-ai.com" # Frontend URL
+```
+
+### Testing Flow
+
+1. **Local Dev**
+
+   - Usar `ngrok` ou Cloudflare Tunnel para expor localhost
+   - Configurar domínio temporário no @BotFather
+   - Testar widget em `http://localhost:3000` (permitido em dev)
+
+2. **Staging**
+
+   - Deploy em `staging.nexo-ai.com`
+   - Configurar domínio no @BotFather
+   - Validar HMAC e timestamps
+
+3. **Production**
+   - `app.nexo-ai.com` com SSL
+   - Monitorar logs de auth failures
+   - Rate limiting (max 10 auth/min/IP)
+
+### Alternative: Inline Login (Advanced)
+
+Para apps Telegram nativos, usar [LoginUrl](https://core.telegram.org/bots/api#loginurl) em botões inline:
+
+```typescript
+await telegramAdapter.sendMessageWithButtons(chatId, "Acesse seu dashboard:", [
+  {
+    text: "🔐 Login no Dashboard",
+    login_url: {
+      url: "https://app.nexo-ai.com/auth/telegram",
+      request_write_access: true,
+    },
+  },
+]);
+```
+
+### Roadmap Implementation
+
+- **Phase 8.1**: Backend auth endpoint + HMAC validation
+- **Phase 8.2**: Frontend widget integration
+- **Phase 8.3**: JWT session management
+- **Phase 8.4**: Link Telegram accounts to existing users
+- **Phase 8.5**: Dashboard permissions based on Telegram ID
+
+**Prioridade:** Baixa (após dashboard web estar completo)
+
+**Referências:**
+
+- [Telegram Login Widget](https://core.telegram.org/widgets/login)
+- [Bot Features: Web Login](https://core.telegram.org/bots/features#web-login)
+- [Sample Code (PHP)](https://gist.github.com/anonymous/6516521b1fb3b464534fbc30ea3573c2)
+
+---
+
 ## 🚧 Phase 5: Items CRUD API (Semana 3) - **EM ANDAMENTO**
 
 **Objetivo:** API REST completa para gerenciar items
