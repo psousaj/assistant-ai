@@ -587,6 +587,341 @@ await telegramAdapter.sendMessageWithButtons(chatId, "Acesse seu dashboard:", [
 
 ---
 
+## 🔄 Phase 7: Advanced State Machine (Feature Futura)
+
+**Objetivo:** Evoluir state machine para suportar fluxos complexos, paralelos e nested states
+
+### Contexto
+
+State machine atual é **manual e simples** (5 estados, transições lineares). Esta fase prepara o sistema para cenários avançados quando a complexidade aumentar.
+
+**Quando implementar:**
+
+- ✅ Adicionar AI Tools com múltiplos tool calls
+- ✅ Implementar Business Bots com fluxos complexos
+- ✅ Bulk operations (processar múltiplos items)
+- ✅ Edição de items com navegação entre estados
+- ✅ Sistema atingir > 10 estados
+
+**Decisão Arquitetural:** Ver [ADR-008](adr/008-advanced-state-machine.md)
+
+---
+
+### 📊 Phase 7.1: Type-Safe Transitions (v0.3.0)
+
+**Objetivo:** Adicionar validação de transições sem dependências externas
+
+#### Tasks
+
+- [ ] **7.1.1 State Machine Layer**
+
+  - [ ] Criar `services/conversation/state-machine.ts`
+  - [ ] Definir `ConversationEvent` types
+  - [ ] Implementar matriz de transições
+  - [ ] Função `transition(state, event)` com validação
+  - [ ] Função `canTransition(state, event)` helper
+
+- [ ] **7.1.2 Integração com Conversation Service**
+
+  - [ ] Modificar `conversation-service.ts`
+  - [ ] Usar `transition()` ao invés de `updateState()` direto
+  - [ ] Adicionar logs de transições
+  - [ ] Error handling para transições inválidas
+
+- [ ] **7.1.3 Novos Estados**
+
+  - [ ] Adicionar `processing` (classificando + buscando)
+  - [ ] Adicionar `validating` (checando duplicatas)
+  - [ ] Adicionar `editing` (modificando item)
+
+- [ ] **7.1.4 Testing**
+  - [ ] Unit tests para matriz de transições
+  - [ ] Integration tests de fluxos completos
+  - [ ] Test invalid transitions (should throw)
+
+**Estrutura de Arquivos:**
+
+```
+src/services/conversation/
+├── conversation-service.ts (modificado)
+├── state-machine.ts (novo)
+└── types.ts (novo)
+```
+
+**Exemplo de Implementação:**
+
+```typescript
+// state-machine.ts
+export type State =
+  | "idle"
+  | "awaiting_confirmation"
+  | "enriching"
+  | "saving"
+  | "error";
+
+export type Event =
+  | { type: "DETECT_CONTENT"; contentType: ItemType; query: string }
+  | { type: "CONFIRM_SELECTION"; index: number }
+  | { type: "ENRICH_SUCCESS"; metadata: any }
+  | { type: "SAVE_SUCCESS" }
+  | { type: "ERROR"; message: string };
+
+const transitions: Record<State, Partial<Record<Event["type"], State>>> = {
+  idle: { DETECT_CONTENT: "awaiting_confirmation" },
+  awaiting_confirmation: {
+    CONFIRM_SELECTION: "enriching",
+    ERROR: "error",
+  },
+  enriching: {
+    ENRICH_SUCCESS: "saving",
+    ERROR: "error",
+  },
+  saving: {
+    SAVE_SUCCESS: "idle",
+    ERROR: "error",
+  },
+  error: { DETECT_CONTENT: "idle" },
+};
+
+export function transition(currentState: State, event: Event): State {
+  const nextState = transitions[currentState][event.type];
+
+  if (!nextState) {
+    throw new Error(`Invalid transition: ${currentState} + ${event.type}`);
+  }
+
+  console.log(`State: ${currentState} → ${nextState}`);
+  return nextState;
+}
+```
+
+**Entregável:** Transições type-safe sem dependências
+
+---
+
+### 🔀 Phase 7.2: Nested & Parallel States (v0.4.0)
+
+**Objetivo:** Suportar sub-estados e operações paralelas (quando necessário)
+
+#### Tasks
+
+- [ ] **7.2.1 Nested States Design**
+
+  - [ ] Mapear fluxos que precisam substates
+  - [ ] Exemplo: `processing: { classifying, searching, singleResult, multipleResults }`
+  - [ ] Documentar hierarquia de estados
+
+- [ ] **7.2.2 Parallel States Design**
+
+  - [ ] Identificar operações que podem rodar em paralelo
+  - [ ] Exemplo: `enriching: { tmdb, streaming, aiTags }` (paralelo)
+  - [ ] Definir estratégia de sincronização
+
+- [ ] **7.2.3 Implementação Manual** (opção 1)
+
+  - [ ] Estender `state-machine.ts` com nested support
+  - [ ] Formato: `"processing.searching"` (dot notation)
+  - [ ] Parallel via Promise.all() + flags no context
+
+- [ ] **7.2.4 Avaliar XState** (opção 2)
+  - [ ] PoC com XState
+  - [ ] Comparar bundle size vs features
+  - [ ] Decisão: implementar ou postergar
+
+**Entregável:** Suporte a nested/parallel OU decisão de adiar XState
+
+---
+
+### 🤖 Phase 7.3: XState Migration (v0.5.0+)
+
+**Objetivo:** Migrar para XState se cenários avançados forem necessários
+
+#### Pre-requisitos para Migração
+
+Implementar **APENAS SE** atingir 2+ destes cenários:
+
+- ✅ Sistema tem > 10 estados
+- ✅ Precisa de nested states em produção
+- ✅ Precisa de parallel states nativos
+- ✅ Guards complexos (condições nas transições)
+- ✅ Actions automáticas (hooks em entrada/saída)
+- ✅ History states (navegação "voltar")
+- ✅ Time > 3 devs (benefício de visualização)
+
+#### Tasks
+
+- [ ] **7.3.1 XState Setup**
+
+  - [ ] Instalar `xstate` + `@xstate/inspect`
+  - [ ] Criar `src/machines/conversation-machine.ts`
+  - [ ] Migrar estados atuais para XState format
+
+- [ ] **7.3.2 Machine Adapter**
+
+  - [ ] Criar `services/conversation/machine-adapter.ts`
+  - [ ] Wrapper para `interpret()` do XState
+  - [ ] Bridge entre XState e conversation-service
+
+- [ ] **7.3.3 Advanced Features**
+
+  - [ ] Implementar nested states
+  - [ ] Implementar parallel states
+  - [ ] Adicionar guards/actions
+  - [ ] History states para edição
+
+- [ ] **7.3.4 Visualization**
+
+  - [ ] Configurar @xstate/inspect
+  - [ ] Documentação visual via Stately.ai
+  - [ ] Export diagrams para docs/
+
+- [ ] **7.3.5 Testing & Migration**
+  - [ ] Testes end-to-end com XState
+  - [ ] Migração incremental (feature flag)
+  - [ ] Rollback plan
+
+**Estrutura de Arquivos:**
+
+```
+src/
+├── machines/
+│   ├── conversation-machine.ts
+│   ├── enrichment-machine.ts
+│   └── types.ts
+├── services/conversation/
+│   ├── conversation-service.ts (usa machine-adapter)
+│   └── machine-adapter.ts (wrapper XState)
+```
+
+**Exemplo de XState Machine:**
+
+```typescript
+// conversation-machine.ts
+import { createMachine } from "xstate";
+
+export const conversationMachine = createMachine({
+  id: "conversation",
+  initial: "idle",
+
+  states: {
+    idle: {
+      on: { DETECT_CONTENT: "processing" },
+    },
+
+    processing: {
+      initial: "classifying",
+      states: {
+        classifying: {
+          invoke: {
+            src: "classifyContent",
+            onDone: { target: "searching" },
+          },
+        },
+        searching: {
+          invoke: {
+            src: "searchExternal",
+            onDone: [
+              { target: "singleResult", cond: "isSingleResult" },
+              { target: "multipleResults" },
+            ],
+          },
+        },
+        singleResult: {
+          on: { CONFIRM: "#conversation.enriching" },
+        },
+        multipleResults: {
+          on: { SELECT: "singleResult" },
+        },
+      },
+    },
+
+    enriching: {
+      type: "parallel",
+      states: {
+        tmdb: {
+          initial: "loading",
+          states: {
+            loading: {
+              invoke: {
+                src: "fetchTMDB",
+                onDone: "success",
+              },
+            },
+            success: { type: "final" },
+          },
+        },
+        streaming: {
+          initial: "loading",
+          states: {
+            loading: {
+              invoke: {
+                src: "fetchStreaming",
+                onDone: "success",
+              },
+            },
+            success: { type: "final" },
+          },
+        },
+      },
+      onDone: "saving",
+    },
+
+    saving: {
+      invoke: {
+        src: "saveItem",
+        onDone: "idle",
+      },
+    },
+  },
+});
+```
+
+**Entregável:** State machine com XState (apenas se necessário)
+
+---
+
+### 📈 Métricas de Decisão
+
+| Métrica               | Phase 7.1 | Phase 7.2 | Phase 7.3   |
+| --------------------- | --------- | --------- | ----------- |
+| **Número de Estados** | 5-7       | 8-12      | 12+         |
+| **Nested States**     | ❌        | Manual    | Nativo      |
+| **Parallel States**   | ❌        | Manual    | Nativo      |
+| **Guards/Actions**    | ❌        | Manual    | Declarativo |
+| **Visualização**      | ❌        | ❌        | Stately.ai  |
+| **Bundle Size**       | 0kb       | 0kb       | +40kb       |
+| **Complexidade**      | Baixa     | Média     | Alta        |
+
+**Regra de Decisão:**
+
+- Phase 7.1: ✅ **Implementar sempre** (type-safety)
+- Phase 7.2: Implementar **SE** > 8 estados ou precisar de parallel
+- Phase 7.3: Implementar **SE** 2+ cenários complexos
+
+---
+
+### 🎯 Roadmap de Implementação
+
+```mermaid
+graph TD
+    A[Phase 7.1: Type-Safe] --> B{> 8 estados?}
+    B -->|Sim| C[Phase 7.2: Nested/Parallel]
+    B -->|Não| D[Manter 7.1]
+    C --> E{2+ cenários complexos?}
+    E -->|Sim| F[Phase 7.3: XState]
+    E -->|Não| G[Manter 7.2]
+```
+
+**Prioridade:** Média (implementar 7.1 em v0.3.0, avaliar 7.2/7.3 depois)
+
+**Referências:**
+
+- [ADR-008: Advanced State Machine](adr/008-advanced-state-machine.md)
+- [XState Documentation](https://xstate.js.org/docs/)
+- [ADR-004: State Machine Original](adr/004-state-machine.md)
+
+---
+
 ## 📋 Phase 7: Auth & Multi-User (Semana 4) - **PLANEJADO**
 
 **Objetivo:** Suporte multi-usuário com autenticação
