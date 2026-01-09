@@ -47,7 +47,163 @@ async function processMessage(
     );
     const hasRecentContext = recentMessages.length > 1; // Mais de 1 mensagem = tem contexto
 
-    // 5. Se está aguardando confirmação, processa resposta
+    // 5. Se está aguardando confirmação de item em batch, processa
+    if (conversation.state === "awaiting_batch_item") {
+      const context = conversation.context as any;
+      const selection = parseInt(messageText.trim());
+
+      if (
+        !isNaN(selection) &&
+        context.batch_current_candidates &&
+        context.batch_current_candidates[selection - 1]
+      ) {
+        const selected = context.batch_current_candidates[selection - 1];
+        const currentItem = context.batch_queue[context.batch_current_index];
+
+        // Salva o filme confirmado
+        if (currentItem.type === "movie") {
+          const metadata = await enrichmentService.enrich("movie", {
+            tmdbId: selected.id,
+          });
+
+          await itemService.createItem({
+            userId: user.id,
+            type: "movie",
+            title: selected.title,
+            metadata: metadata || undefined,
+          });
+
+          // Marca item como confirmado
+          context.batch_queue[context.batch_current_index].status = "confirmed";
+          context.batch_confirmed_items = context.batch_confirmed_items || [];
+          context.batch_confirmed_items.push({
+            title: selected.title,
+            year: selected.release_date?.split("-")[0],
+          });
+
+          responseText = `✅ ${selected.title} (${
+            selected.release_date?.split("-")[0]
+          }) salvo!\n\n`;
+        }
+
+        // Avança para o próximo item da fila
+        context.batch_current_index++;
+
+        // Verifica se ainda há itens pendentes
+        const nextPendingIndex = context.batch_queue.findIndex(
+          (item: any, idx: number) =>
+            idx >= context.batch_current_index && item.status === "pending"
+        );
+
+        if (nextPendingIndex !== -1) {
+          // Processa próximo item
+          const nextItem = context.batch_queue[nextPendingIndex];
+          context.batch_current_index = nextPendingIndex;
+          nextItem.status = "processing";
+
+          if (nextItem.type === "movie") {
+            const results = await enrichmentService.searchMovies(
+              nextItem.query
+            );
+
+            if (results.length === 1) {
+              // Match único, salva direto e continua
+              const movie = results[0];
+              const metadata = await enrichmentService.enrich("movie", {
+                tmdbId: movie.id,
+              });
+
+              await itemService.createItem({
+                userId: user.id,
+                type: "movie",
+                title: movie.title,
+                metadata: metadata || undefined,
+              });
+
+              nextItem.status = "confirmed";
+              context.batch_confirmed_items.push({
+                title: movie.title,
+                year: movie.release_date?.split("-")[0],
+              });
+
+              responseText += `✅ ${movie.title} (${
+                movie.release_date?.split("-")[0]
+              }) salvo!\n\n`;
+
+              // Continua processando recursivamente
+              context.batch_current_index++;
+              // TODO: processar próximos itens em loop
+            } else if (results.length > 1) {
+              // Múltiplos resultados, pede confirmação
+              context.batch_current_candidates = results.slice(0, 3);
+
+              const remaining = context.batch_queue.filter(
+                (item: any) => item.status === "pending"
+              ).length;
+              const progress = `[${context.batch_current_index + 1}/${
+                context.batch_queue.length
+              }]`;
+
+              const options = results
+                .slice(0, 3)
+                .map(
+                  (m, i) =>
+                    `${i + 1}. ${m.title} (${m.release_date?.split("-")[0]})`
+                )
+                .join("\n");
+
+              responseText += `${progress} **${nextItem.query}**\n\nEncontrei:\n${options}\n\nQual você quer? (Digite o número)`;
+              responseText +=
+                remaining > 1
+                  ? `\n\n📋 Ainda faltam ${remaining - 1} filme(s)`
+                  : "";
+
+              await conversationService.updateState(
+                conversation.id,
+                "awaiting_batch_item",
+                context
+              );
+              await conversationService.addMessage(
+                conversation.id,
+                "assistant",
+                responseText
+              );
+              await provider.sendMessage(incomingMsg.externalId, responseText);
+              return;
+            }
+          }
+        } else {
+          // Terminou a fila!
+          const totalConfirmed = context.batch_confirmed_items?.length || 0;
+          responseText += `\n🎉 Pronto! ${totalConfirmed} filme(s) salvos:\n`;
+          context.batch_confirmed_items?.forEach((item: any) => {
+            responseText += `• ${item.title} (${item.year})\n`;
+          });
+
+          await conversationService.updateState(conversation.id, "idle", {});
+        }
+
+        await conversationService.addMessage(
+          conversation.id,
+          "assistant",
+          responseText
+        );
+        await provider.sendMessage(incomingMsg.externalId, responseText);
+        return;
+      } else {
+        const currentItem = context.batch_queue[context.batch_current_index];
+        responseText = `Por favor, escolha uma das opções para "${currentItem.query}" (1, 2 ou 3).`;
+        await conversationService.addMessage(
+          conversation.id,
+          "assistant",
+          responseText
+        );
+        await provider.sendMessage(incomingMsg.externalId, responseText);
+        return;
+      }
+    }
+
+    // 5b. Se está aguardando confirmação simples, processa resposta
     if (conversation.state === "awaiting_confirmation") {
       const context = conversation.context as any;
       const selection = parseInt(messageText.trim());
@@ -96,6 +252,111 @@ async function processMessage(
     // 6. Classifica tipo de conteúdo
     let detectedType = classifierService.detectType(messageText);
     let processedMessage = messageText;
+
+    // 6.1 DETECTA MÚLTIPLOS ITENS (lista)
+    const multipleItems = classifierService.detectMultipleItems(messageText);
+
+    if (multipleItems && multipleItems.length >= 2) {
+      // Detectou lista! Inicia processamento em batch
+      const batchQueue = multipleItems.map((item) => ({
+        query: item,
+        type: classifierService.detectType(item) || "movie",
+        status: "pending" as const,
+      }));
+
+      responseText = `📋 Detectei ${multipleItems.length} itens! Vamos processar:\n`;
+      multipleItems.forEach((item, i) => {
+        responseText += `${i + 1}. ${item}\n`;
+      });
+      responseText += `\n⏳ Buscando informações...`;
+
+      // Envia mensagem inicial
+      await conversationService.addMessage(
+        conversation.id,
+        "assistant",
+        responseText
+      );
+      await provider.sendMessage(incomingMsg.externalId, responseText);
+
+      // Inicia processamento do primeiro item
+      const firstItem = batchQueue[0];
+      firstItem.status = "processing";
+
+      if (firstItem.type === "movie") {
+        const results = await enrichmentService.searchMovies(firstItem.query);
+
+        if (results.length === 1) {
+          // Match único, salva direto
+          const movie = results[0];
+          const metadata = await enrichmentService.enrich("movie", {
+            tmdbId: movie.id,
+          });
+
+          await itemService.createItem({
+            userId: user.id,
+            type: "movie",
+            title: movie.title,
+            metadata: metadata || undefined,
+          });
+
+          firstItem.status = "confirmed";
+          responseText = `✅ [1/${batchQueue.length}] ${movie.title} (${
+            movie.release_date?.split("-")[0]
+          }) salvo!\n\n`;
+
+          // TODO: Continuar processando próximos itens
+          // Por enquanto, continua no próximo ciclo de mensagem
+        } else if (results.length > 1) {
+          // Múltiplos resultados, pede confirmação
+          await conversationService.updateState(
+            conversation.id,
+            "awaiting_batch_item",
+            {
+              batch_queue: batchQueue,
+              batch_current_index: 0,
+              batch_current_candidates: results.slice(0, 3),
+              batch_confirmed_items: [],
+            }
+          );
+
+          const options = results
+            .slice(0, 3)
+            .map(
+              (m, i) =>
+                `${i + 1}. ${m.title} (${m.release_date?.split("-")[0]})`
+            )
+            .join("\n");
+
+          responseText = `[1/${batchQueue.length}] **${
+            firstItem.query
+          }**\n\nEncontrei:\n${options}\n\nQual você quer? (Digite o número)\n\n📋 Depois confirmo os outros ${
+            batchQueue.length - 1
+          } filmes`;
+
+          await conversationService.addMessage(
+            conversation.id,
+            "assistant",
+            responseText
+          );
+          await provider.sendMessage(incomingMsg.externalId, responseText);
+          return;
+        } else {
+          // Não encontrou
+          firstItem.status = "skipped";
+          responseText = `❌ [1/${batchQueue.length}] Não encontrei "${firstItem.query}"\n\n`;
+        }
+      }
+
+      // Se chegou aqui sem retornar, continua processando próximos
+      // (implementação simplificada - ideal seria loop recursivo)
+      await conversationService.addMessage(
+        conversation.id,
+        "assistant",
+        responseText
+      );
+      await provider.sendMessage(incomingMsg.externalId, responseText);
+      return;
+    }
 
     // 7. Se tem contexto recente E não detectou tipo claro, usa IA para analisar
     if (

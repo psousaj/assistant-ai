@@ -65,6 +65,32 @@ export class ClassifierService {
     const urlMatch = message.match(/https?:\/\/[^\s]+/);
     return urlMatch ? urlMatch[0] : null;
   }
+
+  /**
+   * Detecta múltiplos itens na mensagem (separados por vírgula, quebra de linha, etc)
+   */
+  detectMultipleItems(message: string): string[] | null {
+    // Remove URLs primeiro para não interferir
+    const withoutUrls = message.replace(/https?:\/\/[^\s]+/g, "");
+
+    // Verifica separadores comuns
+    const separators = [",", "\n", ";", " e ", " - "];
+
+    for (const sep of separators) {
+      if (withoutUrls.includes(sep)) {
+        const items = message
+          .split(new RegExp(`[,;\\n]|\\s+e\\s+|\\s+-\\s+`))
+          .map((item) => item.trim())
+          .filter((item) => item.length > 2); // Mínimo 3 caracteres
+
+        if (items.length >= 2) {
+          return items;
+        }
+      }
+    }
+
+    return null;
+  }
 }
 
 export const classifierService = new ClassifierService();

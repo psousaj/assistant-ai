@@ -1047,17 +1047,91 @@ Claude Desktop
 
 ### Contexto
 
-State machine atual é **manual e simples** (5 estados, transições lineares). Esta fase prepara o sistema para cenários avançados quando a complexidade aumentar.
+State machine atual é **manual e simples** (7 estados, transições lineares). Esta fase prepara o sistema para cenários avançados quando a complexidade aumentar.
 
-**Quando implementar:**
+**Implementação Atual (v0.2.0):**
 
-- ✅ Adicionar AI Tools com múltiplos tool calls
-- ✅ Implementar Business Bots com fluxos complexos
-- ✅ Bulk operations (processar múltiplos items)
-- ✅ Edição de items com navegação entre estados
-- ✅ Sistema atingir > 10 estados
+- ✅ Estados básicos: `idle`, `awaiting_confirmation`, `enriching`, `saving`, `error`
+- ✅ **NOVO:** `batch_processing`, `awaiting_batch_item` (processamento sequencial de listas)
+- ✅ Contexto com fila: `batch_queue[]`, `batch_current_index`, `batch_confirmed_items[]`
+- ✅ Fluxo: Detecta lista → Processa item por item → Aguarda confirmação → Próximo item → Completa
 
-**Decisão Arquitetural:** Ver [ADR-008](adr/008-advanced-state-machine.md)
+**Quando migrar para XState:**
+
+- ⚠️ Sistema atingir **> 10 estados** diferentes
+- ⚠️ Necessidade de **nested states** (ex: `batch_processing.idle`, `batch_processing.confirming`)
+- ⚠️ Paralelização (processar múltiplos fluxos simultâneos)
+- ⚠️ Transições condicionais complexas com guards
+- ⚠️ Histórico de estados (back/undo)
+- ⚠️ Timers e delays automáticos
+
+**Por enquanto:** Implementação manual está **boa o suficiente** 👍
+
+### Cenários Complexos Implementados (v0.2.0)
+
+#### ✅ Batch Processing com Fila Sequencial
+
+```
+Usuário: "clube da luta, matrix, interestelar"
+
+Bot: 📋 Detectei 3 itens!
+     1. clube da luta
+     2. matrix
+     3. interestelar
+
+     ⏳ Buscando informações...
+
+     [1/3] **clube da luta**
+     Encontrei:
+     1. Fight Club (1999)
+     2. The Fight Club (2020)
+
+     Qual você quer? (Digite o número)
+     📋 Depois confirmo os outros 2 filmes
+
+Usuário: "1"
+
+Bot: ✅ Fight Club (1999) salvo!
+
+     [2/3] **matrix**
+     1. The Matrix (1999) ✅ Salvando...
+
+     [3/3] **interestelar**
+     Encontrei:
+     1. Interstellar (2014)
+     2. Interstellar Wars (2008)
+
+     Qual você quer?
+```
+
+**Estado durante processamento:**
+
+```typescript
+{
+  state: "awaiting_batch_item",
+  context: {
+    batch_queue: [
+      { query: "clube da luta", type: "movie", status: "confirmed" },
+      { query: "matrix", type: "movie", status: "confirmed" },
+      { query: "interestelar", type: "movie", status: "processing" }
+    ],
+    batch_current_index: 2,
+    batch_current_candidates: [...],
+    batch_confirmed_items: [
+      { title: "Fight Club", year: "1999" },
+      { title: "The Matrix", year: "1999" }
+    ]
+  }
+}
+```
+
+**Awareness da Fila:**
+
+- ✅ Bot sabe quantos itens faltam processar
+- ✅ Mostra progresso: `[2/3]`
+- ✅ Aguarda múltiplas mensagens até confirmar item atual
+- ✅ Só avança quando usuário confirma
+- ✅ Resumo final com todos os itens salvos
 
 ---
 

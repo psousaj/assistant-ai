@@ -5,6 +5,8 @@ export type ItemType = "movie" | "video" | "link" | "note";
 export type ConversationState =
   | "idle"
   | "awaiting_confirmation"
+  | "batch_processing" // Processando lista de itens
+  | "awaiting_batch_item" // Aguardando confirmação de item da lista
   | "enriching"
   | "saving"
   | "error";
@@ -61,6 +63,17 @@ export interface ConversationContext {
   candidates?: any[];
   last_query?: string;
   detected_type?: ItemType;
+
+  // Batch processing
+  batch_queue?: Array<{
+    query: string;
+    type: ItemType;
+    status: "pending" | "processing" | "confirmed" | "skipped";
+  }>;
+  batch_current_index?: number; // Índice do item atual na fila
+  batch_current_candidates?: any[]; // Candidatos do item atual
+  batch_confirmed_items?: any[]; // Itens já confirmados
+
   [key: string]: any;
 }
 
