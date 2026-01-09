@@ -87,6 +87,26 @@ export class ConversationService {
   }
 
   /**
+   * Busca mensagens recentes (últimos 5 minutos)
+   * Útil para determinar se mensagem é continuação de contexto
+   */
+  async getRecentMessages(conversationId: string, minutesAgo = 5) {
+    const fiveMinutesAgo = new Date(Date.now() - minutesAgo * 60 * 1000);
+    
+    const recentMessages = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(desc(messages.createdAt))
+      .limit(10);
+
+    // Filtra apenas as dos últimos X minutos
+    return recentMessages
+      .filter((msg) => new Date(msg.createdAt) >= fiveMinutesAgo)
+      .reverse(); // Ordem cronológica
+  }
+
+  /**
    * Limpa contexto e volta estado para idle
    */
   async resetConversation(conversationId: string) {

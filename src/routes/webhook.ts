@@ -40,12 +40,94 @@ async function processMessage(
     // 3. Salva mensagem do usuário
     await conversationService.addMessage(conversation.id, "user", messageText);
 
-    // 4. Classifica tipo de conteúdo
-    const detectedType = classifierService.detectType(messageText);
+    // 4. Verifica contexto recente (últimos 5 minutos)
+    const recentMessages = await conversationService.getRecentMessages(conversation.id, 5);
+    const hasRecentContext = recentMessages.length > 1; // Mais de 1 mensagem = tem contexto
 
-    // 5. Processa baseado no tipo
+    // 5. Se está aguardando confirmação, processa resposta
+    if (conversation.state === "awaiting_confirmation") {
+      const context = conversation.context as any;
+      const selection = parseInt(messageText.trim());
+
+      if (!isNaN(selection) && context.candidates && context.candidates[selection - 1]) {
+        const selected = context.candidates[selection - 1];
+        
+        if (context.detected_type === "movie") {
+          const metadata = await enrichmentService.enrich("movie", {
+            tmdbId: selected.id,
+          });
+
+          await itemService.createItem({
+            userId: user.id,
+            type: "movie",
+            title: selected.title,
+            metadata: metadata || undefined,
+          });
+
+          responseText = `✅ Salvo: ${selected.title} (${selected.release_date?.split("-")[0]})`;
+          
+          // Reseta estado
+          await conversationService.updateState(conversation.id, "idle", {});
+        }
+      } else {
+        responseText = "Por favor, digite o número da opção que deseja (1, 2 ou 3).";
+      }
+
+      // Salva e envia resposta
+      await conversationService.addMessage(conversation.id, "assistant", responseText);
+      await provider.sendMessage(incomingMsg.externalId, responseText);
+      return;
+    }
+
+    // 6. Classifica tipo de conteúdo
+    let detectedType = classifierService.detectType(messageText);
+    let processedMessage = messageText;
+
+    // 7. Se tem contexto recente E não detectou tipo claro, usa IA para analisar
+    if (hasRecentContext && detectedType === "note" && !classifierService.extractUrl(messageText)) {
+      try {
+        const history = await conversationService.getHistory(conversation.id, 10);
+        const contextAnalysis = await llmService.callLLM({
+          message: `ANÁLISE DE CONTEXTO:
+
+Histórico recente:
+${history.slice(-6).map(m => `${m.role === 'user' ? 'Usuário' : 'Bot'}: ${m.content}`).join('\n')}
+
+Nova mensagem: "${messageText}"
+
+PERGUNTA: Esta nova mensagem é:
+A) Um REFINAMENTO/COMPLEMENTO da mensagem anterior (adiciona contexto, especifica detalhes)
+B) Uma NOVA SOLICITAÇÃO independente
+
+Responda apenas: "REFINAMENTO" ou "NOVA_SOLICITACAO"
+
+Se for refinamento, forneça também a consulta combinada no formato:
+RESULTADO: [consulta completa]`,
+          history: [],
+          systemPrompt: "Você analisa contexto de conversas. Responda de forma direta e objetiva.",
+        });
+
+        const isRefinement = contextAnalysis.message.toUpperCase().includes("REFINAMENTO");
+        
+        if (isRefinement) {
+          // Extrai consulta combinada se disponível
+          const resultMatch = contextAnalysis.message.match(/RESULTADO:\s*(.+)/i);
+          if (resultMatch) {
+            processedMessage = resultMatch[1].trim();
+            // Reclassifica com o contexto combinado
+            detectedType = classifierService.detectType(processedMessage);
+          }
+        }
+      } catch (error) {
+        console.error("Erro ao analisar contexto:", error);
+        // Se falhar análise, continua com detecção normal
+      }
+    }
+
+    // 8. Processa baseado no tipo detectado (agora com contexto)
+
     if (detectedType === "movie") {
-      const query = classifierService.extractQuery(messageText, "movie");
+      const query = classifierService.extractQuery(processedMessage, "movie");
       const results = await enrichmentService.searchMovies(query);
 
       if (results.length === 0) {
@@ -88,7 +170,7 @@ async function processMessage(
         responseText = `Encontrei vários filmes:\n\n${options}\n\nQual você quer salvar? (Digite o número)`;
       }
     } else if (detectedType === "video") {
-      const url = classifierService.extractUrl(messageText);
+      const url = classifierService.extractUrl(processedMessage);
       if (url) {
         const metadata = await enrichmentService.enrich("video", { url });
 
@@ -105,7 +187,7 @@ async function processMessage(
         responseText = `✅ Vídeo salvo!`;
       }
     } else if (detectedType === "link") {
-      const url = classifierService.extractUrl(messageText);
+      const url = classifierService.extractUrl(processedMessage);
       if (url) {
         const metadata = await enrichmentService.enrich("link", { url });
 
@@ -147,7 +229,7 @@ async function processMessage(
       }
     }
 
-    // 6. Salva resposta do bot
+    // 9. Salva resposta do bot
     await conversationService.addMessage(
       conversation.id,
       "assistant",
@@ -160,7 +242,7 @@ async function processMessage(
       "😅 Opa, algo deu errado aqui meu brother! Mas já estou de volta. Me manda aí:\n\n🎬 Um filme pra salvar\n🎥 Vídeo do YouTube\n🔗 Link interessante\n📝 Ou qualquer coisa que queira organizar!";
   }
 
-  // 7. Envia resposta via provider (sempre envia, mesmo com erro)
+  // 10. Envia resposta via provider (sempre envia, mesmo com erro)
   try {
     await provider.sendMessage(incomingMsg.externalId, responseText);
 
