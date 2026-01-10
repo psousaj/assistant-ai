@@ -319,6 +319,53 @@ DEFAULT_AI_PROVIDER="gemini" # opcional, default já é gemini
 
 ---
 
+## 🎯 Phase 4.5: Interactive UI Components (Feature Futura)
+
+**Objetivo:** Usar botões e selects nativos do Telegram/WhatsApp para melhorar UX
+
+### Contexto
+
+Atualmente quando há múltiplos filmes, o bot envia uma lista de texto e pede que o usuário digite um número. Com botões inline ou quick replies, a experiência fica mais intuitiva e profissional.
+
+**Use Cases:**
+
+- Lista de filmes → Inline Keyboard com botões clicáveis
+- Confirmação → Quick reply buttons ("Sim" / "Não")
+- Menu de ações → Persistent menu ou comando buttons
+
+### Tasks
+
+- [ ] **4.5.1 Telegram Inline Keyboards**
+
+  - [ ] Atualizar `telegram-adapter.ts` → método `sendMessageWithButtons()`
+  - [ ] Tipo: `InlineKeyboardButton` com `callback_data`
+  - [ ] Handler de callback queries (`POST /webhook/telegram`)
+  - [ ] Atualizar lista de filmes para usar botões ao invés de texto
+  - [ ] Exemplo: `[Button: "Fight Club (1999)"]` → callback_data: `select_movie_123`
+
+- [ ] **4.5.2 WhatsApp Interactive Messages**
+
+  - [ ] Atualizar `whatsapp-adapter.ts` → método `sendInteractiveList()`
+  - [ ] Tipo: `list` message com sections e rows
+  - [ ] Handler de interactive responses no webhook
+  - [ ] Máximo 10 itens por lista (limitação WhatsApp)
+  - [ ] Fallback para texto se lista > 10 itens
+
+- [ ] **4.5.3 Adapter Interface Update**
+
+  - [ ] Adicionar método opcional `supportsInteractive()` na interface
+  - [ ] Criar type `InteractiveOptions` para botões/listas
+  - [ ] Fallback automático para texto se provider não suportar
+
+- [ ] **4.5.4 Conversation Service Integration**
+  - [ ] Detectar quando enviar UI interativa vs texto simples
+  - [ ] Processar callbacks/responses interativas no state machine
+  - [ ] Manter compatibilidade com input de texto livre
+
+**Entregável:** 🎯 Experiência visual com botões e selects para confirmar filmes
+
+---
+
 ## � Phase 8: Productivity Integrations (Feature Futura)
 
 **Objetivo:** Integrar com Google Calendar e Microsoft To Do para gerenciamento de eventos e tarefas
