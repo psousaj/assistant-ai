@@ -1,5 +1,5 @@
 import express, { Express, Request, Response, NextFunction } from "express";
-import { httpServerHandler } from "cloudflare:node";
+// import { httpServerHandler } from "cloudflare:node";
 import swaggerUi from "swagger-ui-express";
 import { env } from "@/config/env";
 import { healthRouter } from "@/routes/health";
@@ -47,4 +47,4 @@ app.listen(PORT, () => {
   console.log(`📚 Documentação: http://localhost:${PORT}/swagger`);
 });
 
-export default httpServerHandler({ port: 3000 });
+// export default httpServerHandler({ port: 3000 });

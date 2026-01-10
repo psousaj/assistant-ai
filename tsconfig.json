@@ -32,7 +32,8 @@
         }
     },
     "include": [
-        "src/**/*"
+        "worker-configuration.d.ts",
+        "src/**/*.ts"
     ],
     "exclude": [
         "node_modules",
