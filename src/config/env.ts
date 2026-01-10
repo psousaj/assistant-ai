@@ -17,6 +17,7 @@ const envSchema = z.object({
   // Meta WhatsApp API (OPCIONAL - Feature futura)
   META_WHATSAPP_TOKEN: z.string().optional(),
   META_WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  META_WHATSAPP_APP_SECRET: z.string().optional(), // Para validação de signature
   META_VERIFY_TOKEN: z.string().optional(),
   META_BUSINESS_ACCOUNT_ID: z.string().optional(),
 

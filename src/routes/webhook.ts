@@ -1060,8 +1060,10 @@ webhookRouter.post("/telegram", async (req: Request, res: Response) => {
  */
 webhookRouter.post("/whatsapp", async (req: Request, res: Response) => {
   try {
-    // Verifica autenticidade
-    if (!whatsappAdapter.verifyWebhook(req)) {
+    // Verifica autenticidade (agora async)
+    const isValid = await whatsappAdapter.verifyWebhook(req);
+    if (!isValid) {
+      console.warn("⚠️ Webhook WhatsApp com signature inválida");
       return res.status(403).json({ error: "Forbidden" });
     }
 
@@ -1078,6 +1080,7 @@ webhookRouter.post("/whatsapp", async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Internal error" });
   }
 });
+
 
 /**
  * GET /whatsapp - Verificação do webhook WhatsApp

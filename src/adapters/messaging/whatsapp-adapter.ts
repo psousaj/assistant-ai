@@ -41,14 +41,86 @@ export class WhatsAppAdapter implements MessagingProvider {
     };
   }
 
-  verifyWebhook(request: any): boolean {
-    // TODO: Implementar validação HMAC SHA256
-    // Suporta tanto Fetch API quanto Express
-    // const signature = request.headers?.get?.("X-Hub-Signature-256") || 
-    //                  request.headers?.["x-hub-signature-256"];
-    // const body = await request.text();
-    // return validateSignature(signature, body, env.META_WHATSAPP_VERIFY_TOKEN);
-    return true;
+  async verifyWebhook(request: any): Promise<boolean> {
+    try {
+      // Extrai signature do header (compatível com Fetch API e Express)
+      const signature = request.headers?.get?.("X-Hub-Signature-256") || 
+                       request.headers?.["x-hub-signature-256"];
+      
+      if (!signature) {
+        console.warn("⚠️ Webhook sem signature X-Hub-Signature-256");
+        return false;
+      }
+
+      // Extrai body como texto (compatível com Elysia/Hono que já parseou)
+      let bodyText: string;
+      
+      if (typeof request.body === "string") {
+        bodyText = request.body;
+      } else if (request.body && typeof request.body === "object") {
+        bodyText = JSON.stringify(request.body);
+      } else {
+        console.error("❌ Body inválido para validação");
+        return false;
+      }
+
+      // Valida signature usando crypto.subtle (Cloudflare Workers compatible)
+      const isValid = await this.validateSignature(signature, bodyText);
+      
+      if (!isValid) {
+        console.warn("⚠️ Signature inválida no webhook WhatsApp");
+      }
+      
+      return isValid;
+    } catch (error) {
+      console.error("❌ Erro ao verificar webhook:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Valida HMAC SHA-256 signature do WhatsApp
+   * Usa crypto.subtle (Cloudflare Workers compatible)
+   */
+  private async validateSignature(
+    receivedSignature: string,
+    payload: string
+  ): Promise<boolean> {
+    try {
+      // Remove prefixo "sha256=" se presente
+      const signatureHash = receivedSignature.startsWith("sha256=")
+        ? receivedSignature.substring(7)
+        : receivedSignature;
+
+      // Converte app secret para ArrayBuffer
+      const encoder = new TextEncoder();
+      const keyData = encoder.encode(env.META_WHATSAPP_APP_SECRET);
+      const messageData = encoder.encode(payload);
+
+      // Importa key para HMAC
+      const cryptoKey = await crypto.subtle.importKey(
+        "raw",
+        keyData,
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"]
+      );
+
+      // Calcula HMAC SHA-256
+      const signature = await crypto.subtle.sign("HMAC", cryptoKey, messageData);
+
+      // Converte para hex string
+      const hashArray = Array.from(new Uint8Array(signature));
+      const expectedHash = hashArray
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      // Compara signatures (timing-safe comparison)
+      return signatureHash.toLowerCase() === expectedHash.toLowerCase();
+    } catch (error) {
+      console.error("❌ Erro ao validar signature:", error);
+      return false;
+    }
   }
 
   async sendMessage(to: string, text: string): Promise<void> {

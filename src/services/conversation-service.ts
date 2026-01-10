@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { conversations, messages } from "@/db/schema";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc, sql, and } from "drizzle-orm";
 import type {
   ConversationState,
   ConversationContext,
@@ -10,12 +10,19 @@ import type {
 export class ConversationService {
   /**
    * Busca ou cria conversação ativa para o usuário
+   * Garante que apenas 1 conversa está ativa por usuário (cross-provider)
    */
   async findOrCreateConversation(userId: string) {
+    // Busca conversa ativa (única por usuário)
     const [existing] = await db
       .select()
       .from(conversations)
-      .where(eq(conversations.userId, userId))
+      .where(
+        and(
+          eq(conversations.userId, userId),
+          eq(conversations.isActive, true)
+        )
+      )
       .orderBy(desc(conversations.updatedAt))
       .limit(1);
 
@@ -23,12 +30,20 @@ export class ConversationService {
       return existing;
     }
 
+    // Desativa todas as conversas antigas antes de criar nova
+    await db
+      .update(conversations)
+      .set({ isActive: false })
+      .where(eq(conversations.userId, userId));
+
+    // Cria nova conversa ativa
     const [newConv] = await db
       .insert(conversations)
       .values({
         userId,
         state: "idle",
         context: {},
+        isActive: true,
       })
       .returning();
 

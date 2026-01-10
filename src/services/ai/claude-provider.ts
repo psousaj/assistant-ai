@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AIProvider, AIResponse, Message } from "./types";
+import { availableTools } from "./tools";
 
 /**
  * Provider para Anthropic Claude API
@@ -32,13 +33,43 @@ export class ClaudeProvider implements AIProvider {
     ];
 
     try {
+      // Converter tools para formato Claude
+      const claudeTools = availableTools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.parameters,
+      }));
+
       const response = await this.client.messages.create({
         model: this.model,
         max_tokens: 1024,
         system: systemPrompt,
         messages,
+        tools: claudeTools,
       });
 
+      // Verifica se há tool use
+      const toolUseBlock = response.content.find(
+        (block) => block.type === "tool_use"
+      );
+
+      if (toolUseBlock && toolUseBlock.type === "tool_use") {
+        return {
+          message: "", // Vazio quando tem tool calls
+          tool_calls: [
+            {
+              id: toolUseBlock.id,
+              type: "function" as const,
+              function: {
+                name: toolUseBlock.name,
+                arguments: JSON.stringify(toolUseBlock.input),
+              },
+            },
+          ],
+        };
+      }
+
+      // Resposta de texto normal
       const content = response.content[0];
       if (content.type === "text") {
         return {

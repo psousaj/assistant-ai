@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { AIProvider, AIResponse, Message } from "./types";
+import { availableTools } from "./tools";
 
 /**
  * Provider para Google Gemini API
@@ -8,7 +9,7 @@ export class GeminiProvider implements AIProvider {
   private client: GoogleGenerativeAI;
   private model: string;
 
-  constructor(apiKey: string, model: string = "gemini-2.5-flash") {
+  constructor(apiKey: string, model: string = "gemini-2.0-flash-exp") {
     this.client = new GoogleGenerativeAI(apiKey);
     this.model = model;
   }
@@ -21,9 +22,17 @@ export class GeminiProvider implements AIProvider {
     const { message, history = [], systemPrompt } = params;
 
     try {
+      // Converter tools para formato Gemini
+      const geminiTools = availableTools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      }));
+
       const model = this.client.getGenerativeModel({
         model: this.model,
         systemInstruction: systemPrompt,
+        tools: [{ functionDeclarations: geminiTools }],
       });
 
       // Converter histórico para formato Gemini
@@ -44,8 +53,25 @@ export class GeminiProvider implements AIProvider {
 
       const result = await chat.sendMessage(message);
       const response = result.response;
-      const text = response.text();
 
+      // Verifica se há function calls
+      const functionCalls = response.functionCalls();
+      if (functionCalls && functionCalls.length > 0) {
+        return {
+          message: "", // Vazio quando tem tool calls
+          tool_calls: functionCalls.map((fc, index) => ({
+            id: `call_${index}_${Date.now()}`,
+            type: "function" as const,
+            function: {
+              name: fc.name,
+              arguments: JSON.stringify(fc.args),
+            },
+          })),
+        };
+      }
+
+      // Resposta de texto normal
+      const text = response.text();
       return {
         message: text,
       };

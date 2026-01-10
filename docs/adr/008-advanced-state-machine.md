@@ -1,8 +1,9 @@
 # ADR-008: Advanced State Machine Architecture
 
-**Status**: proposed
+**Status**: postponed (until v1.0+)
 
-**Data**: 2026-01-07
+**Data**: 2026-01-07  
+**Atualizado**: 2026-01-10
 
 **Decisão por**: Análise de complexidade atual vs futuro
 
@@ -18,10 +19,30 @@ type ConversationState =
   | "awaiting_confirmation"
   | "enriching"
   | "saving"
+  | "batch_processing"
+  | "awaiting_batch_item"
   | "error";
 ```
 
 Transições são diretas via `conversationService.updateState()`, sem validação ou type-safety nas transições.
+
+### Atualização 2026-01-10
+
+**Decisão:** ADIAR migração para XState até v1.0+ ou quando atingir critérios abaixo.
+
+**Estado atual (v0.2.0):**
+- ✅ 7 estados (abaixo do threshold de 10)
+- ✅ Batch processing funcional com estado manual
+- ✅ Transições funcionam bem
+- ✅ Complexidade gerenciável
+
+**Quando migrar:**
+- Sistema atingir > 10 estados
+- Necessidade de nested states em produção
+- Necessidade de parallel states nativos
+- 2+ desenvolvedores mantendo o código
+
+Por enquanto, a implementação manual é **boa o suficiente** 👍
 
 ### Limitações do Modelo Atual
 
