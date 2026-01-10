@@ -1,163 +1,80 @@
-import { Elysia, t } from "elysia";
+import { Router, Request, Response } from "express";
 import { itemService } from "@/services/item-service";
 
-const itemModel = t.Object({
-  id: t.String({ format: "uuid" }),
-  userId: t.String({ format: "uuid" }),
-  type: t.Union([
-    t.Literal("movie"),
-    t.Literal("video"),
-    t.Literal("link"),
-    t.Literal("note"),
-  ]),
-  title: t.String(),
-  metadata: t.Any(),
-  createdAt: t.Date(),
+export const itemsRouter: Router = Router();
+
+/**
+ * GET / - Lista items do usuário
+ */
+itemsRouter.get("/", async (req: Request, res: Response) => {
+  const userId = req.query.userId as string;
+  const type = req.query.type as string | undefined;
+  const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  const items = await itemService.listItems({
+    userId,
+    type: type as any,
+    limit,
+  });
+
+  return res.json({ items });
 });
 
-export const itemsRouter = new Elysia({ prefix: "/items" })
-  /**
-   * GET /items - Lista items do usuário
-   */
-  .get(
-    "/",
-    async ({ query }) => {
-      const items = await itemService.listItems({
-        userId: query.userId,
-        type: query.type,
-        limit: query.limit,
-      });
+/**
+ * GET /:id - Busca item por ID
+ */
+itemsRouter.get("/:id", async (req: Request, res: Response) => {
+  const userId = req.query.userId as string;
 
-      return { items };
-    },
-    {
-      query: t.Object({
-        userId: t.String({ format: "uuid" }),
-        type: t.Optional(
-          t.Union([
-            t.Literal("movie"),
-            t.Literal("video"),
-            t.Literal("link"),
-            t.Literal("note"),
-          ])
-        ),
-        limit: t.Optional(t.Number({ default: 20, minimum: 1, maximum: 100 })),
-      }),
-      response: {
-        200: t.Object({
-          items: t.Array(itemModel),
-        }),
-      },
-      detail: {
-        tags: ["Items"],
-        summary: "Lista items do usuário",
-        description:
-          "Retorna uma lista de items filtrados por usuário e opcionalmente por tipo",
-      },
-    }
-  )
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
 
-  /**
-   * GET /items/:id - Busca item por ID
-   */
-  .get(
-    "/:id",
-    async ({ params, query }) => {
-      const item = await itemService.getItemById(params.id, query.userId);
+  const item = await itemService.getItemById(req.params.id, userId);
 
-      if (!item) {
-        return { error: "Item não encontrado" };
-      }
+  if (!item) {
+    return res.status(404).json({ error: "Item não encontrado" });
+  }
 
-      return { item };
-    },
-    {
-      params: t.Object({
-        id: t.String({ format: "uuid" }),
-      }),
-      query: t.Object({
-        userId: t.String({ format: "uuid" }),
-      }),
-      response: {
-        200: t.Object({
-          item: itemModel,
-        }),
-        404: t.Object({
-          error: t.String(),
-        }),
-      },
-      detail: {
-        tags: ["Items"],
-        summary: "Busca item por ID",
-        description: "Retorna um item específico pelo seu ID",
-      },
-    }
-  )
+  return res.json({ item });
+});
 
-  /**
-   * POST /items/search - Busca semântica
-   */
-  .post(
-    "/search",
-    async ({ body }) => {
-      const items = await itemService.searchItems({
-        userId: body.userId,
-        query: body.query,
-        limit: body.limit,
-      });
+/**
+ * POST /search - Busca semântica
+ */
+itemsRouter.post("/search", async (req: Request, res: Response) => {
+  const { userId, query, limit = 20 } = req.body;
 
-      return { items };
-    },
-    {
-      body: t.Object({
-        userId: t.String({ format: "uuid" }),
-        query: t.String({ minLength: 1, maxLength: 500 }),
-        limit: t.Optional(t.Number({ default: 20, minimum: 1, maximum: 100 })),
-      }),
-      response: {
-        200: t.Object({
-          items: t.Array(itemModel),
-        }),
-      },
-      detail: {
-        tags: ["Items"],
-        summary: "Busca semântica de items",
-        description: "Busca items usando busca semântica no título e metadata",
-      },
-    }
-  )
+  if (!userId || !query) {
+    return res.status(400).json({ error: "userId e query são obrigatórios" });
+  }
 
-  /**
-   * DELETE /items/:id - Deleta item
-   */
-  .delete(
-    "/:id",
-    async ({ params, query }) => {
-      console.log("DELETE request:", { params, query });
-      await itemService.deleteItem(params.id, query.userId);
-      const response = { success: true };
-      console.log("DELETE response:", response);
-      return response;
-    },
-    {
-      params: t.Object({
-        id: t.String({ format: "uuid" }),
-      }),
-      query: t.Object({
-        userId: t.String({ format: "uuid" }),
-      }),
-      response: {
-        200: t.Object(
-          {
-            success: t.Boolean(),
-          },
-          { additionalProperties: false }
-        ),
-      },
-      detail: {
-        tags: ["Items"],
-        summary: "Deleta um item",
-        description: "Remove um item do banco de dados",
-      },
-    }
-  );
+  const items = await itemService.searchItems({
+    userId,
+    query,
+    limit,
+  });
+
+  return res.json({ items });
+});
+
+/**
+ * DELETE /:id - Deleta item
+ */
+itemsRouter.delete("/:id", async (req: Request, res: Response) => {
+  const userId = req.query.userId as string;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  console.log("DELETE request:", { params: req.params, query: req.query });
+  await itemService.deleteItem(req.params.id, userId);
+  const response = { success: true };
+  console.log("DELETE response:", response);
+  return res.json(response);
+});

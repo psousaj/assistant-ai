@@ -41,9 +41,11 @@ export class WhatsAppAdapter implements MessagingProvider {
     };
   }
 
-  verifyWebhook(request: Request): boolean {
+  verifyWebhook(request: any): boolean {
     // TODO: Implementar validação HMAC SHA256
-    // const signature = request.headers.get("X-Hub-Signature-256");
+    // Suporta tanto Fetch API quanto Express
+    // const signature = request.headers?.get?.("X-Hub-Signature-256") || 
+    //                  request.headers?.["x-hub-signature-256"];
     // const body = await request.text();
     // return validateSignature(signature, body, env.META_WHATSAPP_VERIFY_TOKEN);
     return true;

@@ -53,7 +53,7 @@ export class TelegramAdapter implements MessagingProvider {
     };
   }
 
-  verifyWebhook(request: Request): boolean {
+  verifyWebhook(request: any): boolean {
     // Telegram webhook secret (recomendado em produção)
     if (!this.webhookSecret) {
       console.warn(
@@ -62,7 +62,9 @@ export class TelegramAdapter implements MessagingProvider {
       return true; // Modo dev
     }
 
-    const secretToken = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+    // Suporta tanto Fetch API quanto Express
+    const secretToken = request.headers?.get?.("X-Telegram-Bot-Api-Secret-Token") || 
+                       request.headers?.["x-telegram-bot-api-secret-token"];
 
     if (secretToken !== this.webhookSecret) {
       console.error("❌ Telegram webhook secret inválido");
@@ -108,7 +110,7 @@ export class TelegramAdapter implements MessagingProvider {
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = await response.json() as { error_code?: number; description?: string };
       throw new Error(
         `Telegram API error [${errorData.error_code}]: ${errorData.description}`
       );
@@ -136,7 +138,7 @@ export class TelegramAdapter implements MessagingProvider {
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = await response.json() as { error_code?: number; description?: string };
       throw new Error(
         `Telegram setWebhook error [${errorData.error_code}]: ${errorData.description}`
       );
@@ -151,7 +153,7 @@ export class TelegramAdapter implements MessagingProvider {
     const response = await fetch(url);
 
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = await response.json() as { error_code?: number; description?: string };
       throw new Error(
         `Telegram getMe error [${errorData.error_code}]: ${errorData.description}`
       );

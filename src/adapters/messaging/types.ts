@@ -45,8 +45,9 @@ export interface MessagingProvider {
   
   /**
    * Verifica autenticidade do webhook (HMAC, tokens, etc)
+   * Aceita qualquer tipo de Request (Fetch API ou Express)
    */
-  verifyWebhook(request: Request): boolean | Promise<boolean>;
+  verifyWebhook(request: any): boolean | Promise<boolean>;
   
   /**
    * Envia mensagem de texto para um destinatário

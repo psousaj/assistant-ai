@@ -1,44 +1,49 @@
-import { Elysia } from "elysia";
-import { swagger } from "@elysiajs/swagger";
+import express, { Express, Request, Response, NextFunction } from "express";
+import swaggerUi from "swagger-ui-express";
 import { env } from "@/config/env";
 import { healthRouter } from "@/routes/health";
 import { webhookRouter } from "@/routes/webhook";
 import { itemsRouter } from "@/routes/items";
 
-const app = new Elysia()
-  .use(
-    swagger({
-      documentation: {
-        info: {
-          title: "Nexo AI API",
-          version: "0.1.0",
-          description: "Assistente pessoal via WhatsApp com IA",
-        },
-      },
-    })
-  )
-  .onError(({ code, error, set }) => {
-    console.error(`[${code}]`, error);
+const app: Express = express();
 
-    if (code === "NOT_FOUND") {
-      set.status = 404;
-      return { error: "Rota não encontrada" };
-    }
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-    if (code === "VALIDATION") {
-      set.status = 400;
-      return { error: "Dados inválidos" };
-    }
+// Swagger documentation
+const swaggerDocument = {
+  openapi: "3.0.0",
+  info: {
+    title: "Nexo AI API",
+    version: "0.1.0",
+    description: "Assistente pessoal via WhatsApp com IA",
+  },
+};
+app.use("/swagger", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-    set.status = 500;
-    return { error: "Erro interno do servidor" };
-  })
-  .use(healthRouter)
-  .use(webhookRouter)
-  .use(itemsRouter)
-  .listen(parseInt(env.PORT));
+// Routes
+app.use(healthRouter);
+app.use("/webhook", webhookRouter);
+app.use("/items", itemsRouter);
 
-console.log(`🦊 Nexo AI rodando em http://localhost:${env.PORT}`);
-console.log(`📚 Documentação: http://localhost:${env.PORT}/swagger`);
+// Error handling
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error("Error:", err);
+  res.status(err.status || 500).json({
+    error: err.message || "Erro interno do servidor",
+  });
+});
+
+// 404 handler
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: "Rota não encontrada" });
+});
+
+const PORT = parseInt(env.PORT);
+app.listen(PORT, () => {
+  console.log(`🦊 Nexo AI rodando em http://localhost:${PORT}`);
+  console.log(`📚 Documentação: http://localhost:${PORT}/swagger`);
+});
 
 export default app;
