@@ -2,7 +2,11 @@
 export default defineNuxtConfig({
   devtools: { enabled: true },
   modules: ['@nuxtjs/tailwindcss'],
-  
+  vite:{
+    server: {
+      allowedHosts: ['nexo.localhost','nexo.crudbox.tech']
+    }
+  },
   app: {
     head: {
       title: 'Nexo AI - Sua Segunda Memória Digital',
