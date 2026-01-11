@@ -8,7 +8,7 @@ export class CloudflareProvider implements AIProvider {
 	private apiToken: string;
 	private model: string;
 
-	constructor(accountId: string, apiToken: string, model: string = '@cf/meta/llama-3.1-8b-instruct') {
+	constructor(accountId: string, apiToken: string, model: string = '@cf/meta/llama-4-scout-17b-16e-instruct') {
 		this.accountId = accountId;
 		this.apiToken = apiToken;
 		this.model = model;
