@@ -23,15 +23,25 @@ export class AIService {
 		// Inicializa providers disponíveis (na ordem de prioridade)
 		if (env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) {
 			this.providers.set('cloudflare', new CloudflareProvider(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN));
+			console.log('✅ [AI] Cloudflare Workers AI configurado');
+		} else {
+			console.log('⚠️ [AI] Cloudflare Workers AI não configurado (faltam CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_API_TOKEN)');
 		}
 
 		if (env.GOOGLE_API_KEY) {
 			this.providers.set('gemini', new GeminiProvider(env.GOOGLE_API_KEY));
+			console.log('✅ [AI] Google Gemini configurado');
+		} else {
+			console.log('⚠️ [AI] Google Gemini não configurado (falta GOOGLE_API_KEY)');
 		}
+
+		// Lista providers disponíveis
+		const available = Array.from(this.providers.keys());
+		console.log(`🤖 [AI] Providers disponíveis: [${available.join(', ')}]`);
 
 		// Valida que pelo menos um provider está disponível
 		if (this.providers.size === 0) {
-			console.warn('⚠️ Nenhum provider de IA configurado! Configure CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN ou GOOGLE_API_KEY');
+			console.error('❌ [AI] Nenhum provider de IA configurado! Configure CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN ou GOOGLE_API_KEY');
 		}
 
 		// Valida que o provider default existe
@@ -124,6 +134,9 @@ export class AIService {
 	private getFallbackProvider(): AIProviderType | null {
 		const available = Array.from(this.providers.keys());
 		const fallback = available.find((p) => p !== this.currentProvider);
+		console.log(
+			`🔍 [AI] Buscando fallback. Disponíveis: [${available.join(', ')}], Atual: ${this.currentProvider}, Fallback: ${fallback || 'nenhum'}`
+		);
 		return fallback || null;
 	}
 
