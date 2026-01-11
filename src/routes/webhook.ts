@@ -1513,10 +1513,10 @@ export const webhookRouter = new Elysia()
 	 */
 	.post(
 		'/telegram',
-		async ({ body, set }) => {
+		async ({ body, set, request }) => {
 			try {
-				// Verifica autenticidade
-				if (!telegramAdapter.verifyWebhook({ body } as any)) {
+				// Verifica autenticidade (secret vem no header X-Telegram-Bot-Api-Secret-Token)
+				if (!telegramAdapter.verifyWebhook({ headers: request.headers })) {
 					set.status = 403;
 					return { error: 'Forbidden' };
 				}
