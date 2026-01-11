@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Get version from package.json
+        id: package-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: v${VERSION}"
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          if git rev-parse "${{ steps.package-version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.check-tag.outputs.exists == 'false'
+        run: |
+          # Pega o último commit da main
+          LAST_COMMIT=$(git log -1 --pretty=format:"%s")
+
+          # Gera changelog básico dos últimos commits desde a última tag
+          if git describe --tags --abbrev=0 2>/dev/null; then
+            LAST_TAG=$(git describe --tags --abbrev=0)
+            CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -n 10)
+          fi
+
+          # Salva changelog em arquivo
+          echo "## 🚀 What's Changed" > changelog.md
+          echo "" >> changelog.md
+          echo "${CHANGELOG}" >> changelog.md
+          echo "" >> changelog.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ steps.package-version.outputs.version }}" >> changelog.md
+
+      - name: Create Release
+        if: steps.check-tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.package-version.outputs.version }}
+          name: Release ${{ steps.package-version.outputs.version }}
+          body_path: changelog.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release already exists
+        if: steps.check-tag.outputs.exists == 'true'
+        run: |
+          echo "⚠️ Tag ${{ steps.package-version.outputs.version }} já existe. Nenhum release criado."
+          echo "Para criar um novo release, atualize a versão no package.json"
