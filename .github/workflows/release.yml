@@ -8,6 +8,9 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package-version.outputs.version }}
+      created: ${{ steps.check-tag.outputs.exists == 'false' }}
     permissions:
       contents: write
       pull-requests: write
@@ -78,4 +81,22 @@ jobs:
         if: steps.check-tag.outputs.exists == 'true'
         run: |
           echo "⚠️ Tag ${{ steps.package-version.outputs.version }} já existe. Nenhum release criado."
-          echo "Para criar um novo release, atualize a versão no package.json"
+
+  # Notifica New Relic do deployment após release criado
+  newrelic:
+    needs: release
+    if: needs.release.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    name: New Relic Deployment Marker
+    steps:
+      - name: Set Release Version
+        id: version
+        run: echo "release_version=${{ needs.release.outputs.version }}" >> $GITHUB_OUTPUT
+
+      - name: New Relic Application Deployment Marker
+        uses: newrelic/deployment-marker-action@v2.3.0
+        with:
+          apiKey: ${{ secrets.NEW_RELIC_API_KEY }}
+          guid: ${{ secrets.NEW_RELIC_DEPLOYMENT_ENTITY_GUID }}
+          version: '${{ steps.version.outputs.release_version }}'
+          user: '${{ github.actor }}'

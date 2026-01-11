@@ -7,7 +7,7 @@ import { itemService } from '@/services/item-service';
 import { llmService } from '@/services/ai';
 import { ToolExecutor } from '@/services/ai/tool-executor';
 import { env } from '@/config/env';
-import type { ItemType } from '@/types';
+import type { ItemType, ConversationContext } from '@/types';
 import { whatsappAdapter, telegramAdapter, type MessagingProvider, type IncomingMessage } from '@/adapters/messaging';
 
 /**
@@ -396,22 +396,29 @@ async function processMessage(incomingMsg: IncomingMessage, provider: MessagingP
 				.join('\n');
 
 			try {
+				// Verifica se é batch e se usuário quer pular
+				const isBatch = context.batch_queue && context.batch_queue.length > 0;
+				const batchInfo = isBatch
+					? `\n\nNOTE: This is part of a BATCH processing. User can say "pular", "skip", "próximo" to skip current item.`
+					: '';
+
 				const interpretResponse = await llmService.callLLM({
 					message: `CONTEXT: User was asked to choose from this list:
 ${candidatesList}
 
-USER'S MESSAGE: "${messageText}"
+USER'S MESSAGE: "${messageText}"${batchInfo}
 
 TASK: Analyze if the user is:
 1. Selecting an option from the list
-2. Canceling/giving up
-3. Changing subject (asking something else, requesting a different movie/series)
-4. Providing more details to clarify
-5. Unclear response
+2. Canceling/giving up (cancels entire batch if in batch mode)
+3. Skipping current item (only valid in batch mode - "pular", "skip", "próximo")
+4. Changing subject (asking something else, requesting a different movie/series)
+5. Providing more details to clarify
+6. Unclear response
 
 Respond in JSON:
 {
-  "action": "select" | "ambiguous" | "cancel" | "change_subject" | "unclear",
+  "action": "select" | "ambiguous" | "cancel" | "skip" | "change_subject" | "unclear",
   "selected": option number (if action=select),
   "options": [numbers] (if action=ambiguous),
   "new_intent": "search_movie" | "search_tv_show" | "chat" | null (only if action=change_subject),
@@ -421,6 +428,7 @@ Respond in JSON:
 }
 
 CRITICAL RULES:
+- If user says "pular", "skip", "próximo", "next" → action: "skip" (only valid in batch)
 - If user says something like "não, quero X" or "não é esse, é Y" → action: "change_subject", new_query: "Y"
 - If user asks about something unrelated → action: "change_subject", new_intent: "chat"
 - If user says "nenhum desses" or "não quero" without alternative → action: "cancel"
@@ -429,6 +437,7 @@ CRITICAL RULES:
 
 Examples:
 - "o primeiro" → {"action":"select","selected":1}
+- "pular" → {"action":"skip"}
 - "não é esse, é o clube da luta de 1999" → {"action":"change_subject","new_intent":"search_movie","new_query":"Fight Club 1999"}
 - "deixa pra lá, me fala das séries que eu tenho" → {"action":"change_subject","new_intent":"chat"}
 - "nenhum desses" → {"action":"cancel"}`,
@@ -471,18 +480,105 @@ Examples:
 							});
 
 							const year = selected.release_date?.split('-')[0] || selected.first_air_date?.split('-')[0];
+							const savedMsg = saveResult.isDuplicate
+								? `⚠️ Você já tem "${saveResult.existingItem?.title}" salvo!`
+								: `✅ Pronto! Salvei "${selected.title || selected.name}" (${year}) 🎬`;
 
-							if (saveResult.isDuplicate) {
-								responseText = `⚠️ Você já tem "${saveResult.existingItem?.title}" salvo! Foi em ${new Date(
-									saveResult.existingItem?.createdAt || ''
-								).toLocaleDateString('pt-BR')}.`;
+							// Verifica se é batch processing
+							const batchQueue = context.batch_queue;
+							const batchIndex = context.batch_current_index;
+
+							if (batchQueue && typeof batchIndex === 'number') {
+								// É um batch - atualiza status do item atual
+								batchQueue[batchIndex].status = 'confirmed';
+								const confirmedItems = [...(context.batch_confirmed_items || []), selected];
+
+								// Procura próximo item pendente
+								const nextPendingIndex = batchQueue.findIndex((b: any, i: number) => i > batchIndex && b.status === 'pending');
+
+								if (nextPendingIndex !== -1) {
+									// Ainda tem itens pendentes
+									const nextItem = batchQueue[nextPendingIndex];
+									const nextResults =
+										detectedType === 'movie'
+											? await enrichmentService.searchMovies(nextItem.query)
+											: await enrichmentService.searchTVShows(nextItem.query);
+
+									const remaining = batchQueue.filter((b: any) => b.status === 'pending').length - 1;
+
+									if (nextResults.length === 0) {
+										batchQueue[nextPendingIndex].status = 'skipped';
+										responseText = `${savedMsg}\n\n⚠️ Não achei "${nextItem.query}". Pulando...`;
+
+										// Continua processando recursivamente até achar um com resultados
+										// Por simplicidade, vamos para idle e deixa usuário mandar novamente
+										await conversationService.updateState(conversation.id, 'idle', {});
+										await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+									} else if (nextResults.length === 1) {
+										// Único resultado - salva direto e continua
+										const nextMovie = nextResults[0] as any;
+										const nextMetadata = await enrichmentService.enrich(detectedType, { tmdbId: nextMovie.id });
+										const nextTitle = nextMovie.title || nextMovie.name;
+										const nextSaveResult = await itemService.createItem({
+											userId: user.id,
+											type: detectedType,
+											title: nextTitle,
+											metadata: nextMetadata || undefined,
+										});
+
+										batchQueue[nextPendingIndex].status = 'confirmed';
+										const nextSavedMsg = nextSaveResult.isDuplicate ? `⚠️ "${nextTitle}" já estava salvo` : `✅ "${nextTitle}" salvo`;
+
+										// Verifica se tem mais
+										const moreRemaining = batchQueue.filter((b: any) => b.status === 'pending').length;
+										if (moreRemaining === 0) {
+											responseText = `${savedMsg}\n${nextSavedMsg}\n\n🎉 Batch concluído!`;
+											await conversationService.updateState(conversation.id, 'idle', {});
+											await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+										} else {
+											responseText = `${savedMsg}\n${nextSavedMsg}\n\n(${moreRemaining} restante${moreRemaining > 1 ? 's' : ''})`;
+										}
+									} else {
+										await conversationService.updateState(conversation.id, 'awaiting_confirmation', {
+											...context,
+											batch_queue: batchQueue,
+											batch_current_index: nextPendingIndex,
+											batch_current_candidates: nextResults.slice(0, 5),
+											batch_confirmed_items: confirmedItems,
+										});
+
+										const options = nextResults
+											.slice(0, 5)
+											.map((m: any, i: number) => {
+												const title = m.title || m.name;
+												const year = m.release_date?.split('-')[0] || m.first_air_date?.split('-')[0];
+												return `${i + 1}. ${title} (${year})`;
+											})
+											.join('\n');
+
+										responseText = `${savedMsg}\n\n📽️ Próximo: "${nextItem.query}"\n\n${options}\n\nQual? (${remaining} restante${
+											remaining > 1 ? 's' : ''
+										})`;
+									}
+								} else {
+									// Batch concluído
+									const totalSaved = batchQueue.filter((b: any) => b.status === 'confirmed').length;
+									const totalSkipped = batchQueue.filter((b: any) => b.status === 'skipped').length;
+
+									responseText = `${savedMsg}\n\n🎉 Batch concluído! ${totalSaved} salvos`;
+									if (totalSkipped > 0) {
+										responseText += `, ${totalSkipped} não encontrado${totalSkipped > 1 ? 's' : ''}`;
+									}
+
+									await conversationService.updateState(conversation.id, 'idle', {});
+									await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+								}
 							} else {
-								responseText = `✅ Pronto! Salvei "${selected.title || selected.name}" (${year}) 🎬`;
+								// Não é batch - comportamento normal
+								responseText = savedMsg;
+								await conversationService.updateState(conversation.id, 'idle', {});
+								await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
 							}
-
-							await conversationService.updateState(conversation.id, 'idle', {});
-							// Limpa contexto após salvar
-							await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
 						} else {
 							responseText = result.response || 'Não entendi, qual deles?';
 						}
@@ -503,10 +599,96 @@ Examples:
 					}
 
 					case 'cancel': {
-						responseText = result.response || 'Beleza, cancelado! 👍';
+						// Verifica se estava em batch
+						const batchQueue = context.batch_queue;
+						if (batchQueue && batchQueue.length > 0) {
+							const totalSaved = batchQueue.filter((b: any) => b.status === 'confirmed').length;
+							const totalSkipped = batchQueue.filter((b: any) => b.status === 'skipped').length;
+							const totalCanceled = batchQueue.filter((b: any) => b.status === 'pending').length;
+
+							let summary = 'Beleza, batch cancelado! 👍';
+							if (totalSaved > 0) {
+								summary += `\n\n📊 Resumo: ${totalSaved} salvo${totalSaved > 1 ? 's' : ''}`;
+								if (totalSkipped > 0) summary += `, ${totalSkipped} não encontrado${totalSkipped > 1 ? 's' : ''}`;
+								if (totalCanceled > 0) summary += `, ${totalCanceled} cancelado${totalCanceled > 1 ? 's' : ''}`;
+							}
+							responseText = summary;
+						} else {
+							responseText = result.response || 'Beleza, cancelado! 👍';
+						}
+
 						await conversationService.updateState(conversation.id, 'idle', {});
-						// Marca no histórico que o contexto foi limpo (para o LLM saber)
 						await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+						break;
+					}
+
+					case 'skip': {
+						// Pular item atual (só válido em batch)
+						const batchQueue = context.batch_queue;
+						const batchIndex = context.batch_current_index;
+
+						if (!batchQueue || typeof batchIndex !== 'number') {
+							// Não está em batch, trata como cancel
+							responseText = 'Beleza, cancelado! 👍';
+							await conversationService.updateState(conversation.id, 'idle', {});
+							await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+							break;
+						}
+
+						// Marca como pulado
+						batchQueue[batchIndex].status = 'skipped';
+						const skippedTitle = batchQueue[batchIndex].query;
+
+						// Procura próximo pendente
+						const nextPendingIndex = batchQueue.findIndex((b: any, i: number) => i > batchIndex && b.status === 'pending');
+
+						if (nextPendingIndex !== -1) {
+							const nextItem = batchQueue[nextPendingIndex];
+							const nextResults =
+								detectedType === 'movie'
+									? await enrichmentService.searchMovies(nextItem.query)
+									: await enrichmentService.searchTVShows(nextItem.query);
+
+							const remaining = batchQueue.filter((b: any) => b.status === 'pending').length - 1;
+
+							if (nextResults.length === 0) {
+								batchQueue[nextPendingIndex].status = 'skipped';
+								responseText = `⏭️ Pulei "${skippedTitle}"\n\n⚠️ Também não achei "${nextItem.query}"`;
+								// Continua...
+								await conversationService.updateState(conversation.id, 'idle', {});
+								await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+							} else {
+								await conversationService.updateState(conversation.id, 'awaiting_confirmation', {
+									...context,
+									batch_queue: batchQueue,
+									batch_current_index: nextPendingIndex,
+									batch_current_candidates: nextResults.slice(0, 5),
+								});
+
+								const options = nextResults
+									.slice(0, 5)
+									.map((m: any, i: number) => {
+										const title = m.title || m.name;
+										const year = m.release_date?.split('-')[0] || m.first_air_date?.split('-')[0];
+										return `${i + 1}. ${title} (${year})`;
+									})
+									.join('\n');
+
+								responseText = `⏭️ Pulei "${skippedTitle}"\n\n📽️ Próximo: "${
+									nextItem.query
+								}"\n\n${options}\n\nQual? (${remaining} restante${remaining > 1 ? 's' : ''})`;
+							}
+						} else {
+							// Era o último - finaliza batch
+							const totalSaved = batchQueue.filter((b: any) => b.status === 'confirmed').length;
+							const totalSkipped = batchQueue.filter((b: any) => b.status === 'skipped').length;
+
+							responseText = `⏭️ Pulei "${skippedTitle}"\n\n🎉 Batch concluído! ${totalSaved} salvo${
+								totalSaved > 1 ? 's' : ''
+							}, ${totalSkipped} pulado${totalSkipped > 1 ? 's' : ''}`;
+							await conversationService.updateState(conversation.id, 'idle', {});
+							await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+						}
 						break;
 					}
 
@@ -656,11 +838,18 @@ Examples:
 			const isFirstInteraction = messageCount <= 1;
 
 			// Busca histórico recente para contexto conversacional
-			const recentHistory = await conversationService.getHistory(conversation.id, 4);
-			const lastAssistantMessage = recentHistory.filter((m) => m.role === 'assistant' && !m.content.startsWith('[')).pop();
+			const recentHistory = await conversationService.getHistory(conversation.id, 6);
+			const lastMessages = recentHistory.slice(-3); // Últimas 3 mensagens para contexto
 
-			// Monta contexto de conversa (última pergunta do bot, se houver)
-			const conversationContext = lastAssistantMessage ? `LAST BOT MESSAGE: "${lastAssistantMessage.content.substring(0, 200)}"` : '';
+			// Monta contexto de conversa recente (mostra as últimas trocas)
+			let conversationContext = '';
+			if (lastMessages.length > 0) {
+				conversationContext = 'RECENT CONVERSATION:\n';
+				lastMessages.forEach((msg) => {
+					const role = msg.role === 'user' ? 'User' : 'Bot';
+					conversationContext += `${role}: "${msg.content.substring(0, 150)}"\n`;
+				});
+			}
 
 			// Monta contexto de nome para o LLM
 			const nameContext = userFirstName
@@ -696,13 +885,23 @@ INTENT RULES:
 - "chat": casual conversation, questions, or greetings
 - "cancel": user wants to cancel/give up on something
 
-CONVERSATION CONTEXT:
-- If the last bot message asked a QUESTION and user's response seems to answer it, interpret accordingly
-- Example: Bot asked "Como quer me chamar?" and user says "Lúcio" → intent: set_assistant_name, assistant_name: "Lúcio"
-- Example: Bot asked "Qual filme?" and user says "Matrix" → intent: search_movie, query: "The Matrix"
+CONVERSATION CONTEXT RULES:
+- If last bot message asked "É série ou filme?" and user says "filme" → Keep intent as search_movie with the PREVIOUS query mentioned
+- If last bot message confirmed something like "Você quer Madagascar?" and user says "isso/sim/exato" → Confirm with intent search_movie, query: "Madagascar"
+- If user says title directly like "madagascar" → intent: search_movie, query: "Madagascar"
+- User's response "filme" or "série" ALONE is clarification, not a new search - maintain previous context
+- If bot suggested series/movies in previous message and user says "registra X e Y" or "salva X e Y" → intent: search_tv_show (or search_movie), extract titles from user message
+- If user says "registra/salva/anota essa informação" referring to items from PREVIOUS messages → search for those titles in conversation history
+
+EXAMPLES:
+1. User: "salva madagascar" → {"intent": "search_movie", "query": "Madagascar", "response": "Vou buscar Madagascar pra você!"}
+2. Bot: "É filme ou série?" / User: "filme" → {"intent": "search_movie", "query": "Madagascar", "response": "Beleza, buscando o filme Madagascar!"}
+3. Bot: "Você quer Madagascar 1999?" / User: "isso" → {"intent": "search_movie", "query": "Madagascar", "response": "Perfeito! Salvando Madagascar pra você"}
+4. Bot: "Recomendo Friends e Breaking Bad" / User: "salva Friends pra mim" → {"intent": "search_tv_show", "query": "Friends", "response": "Salvando Friends!"}
+5. User: "The Big Bang Theory and Narcos registra essa informção" → {"intent": "search_tv_show", "query": "The Big Bang Theory, Narcos", "response": "Vou salvar The Big Bang Theory e Narcos pra você!"}
 
 CRITICAL - ABBREVIATION EXPANSION (ALWAYS expand to ORIGINAL title):
-- "hymim" or "HYMIM" → query: "How I Met Your Mother" (NOT "Como Conheci Sua Mãe")
+- "himym" or "HIMYM" → query: "How I Met Your Mother" (NOT "Como Conheci Sua Mãe")
 - "tbbt" → query: "The Big Bang Theory"
 - "got" → query: "Game of Thrones"
 - "bb" or "breaking bad" → query: "Breaking Bad"
@@ -721,17 +920,21 @@ The "response" must be natural, friendly, in Brazilian Portuguese.`;
 
 			const intentResponse = await llmService.callLLM({
 				message: intentPrompt,
-				history: [], // NÃO passa histórico - cada mensagem é independente
-				systemPrompt: `You are an intent classifier for a memory assistant.
-Respond ONLY with valid JSON. No markdown, no explanations.
+				history: [], // Não passa histórico completo, apenas contexto no prompt
+				systemPrompt: `You are an intent classifier for MAX, a Brazilian Portuguese memory assistant.
 
 CRITICAL RULES:
-1. ONLY analyze the CURRENT MESSAGE in the prompt - ignore any previous context
-2. The "query" must come DIRECTLY from the current message, NEVER from history or saved items
-3. If you don't recognize the current message as a title, try to expand abbreviations
-4. NEVER substitute the user's input with something from their saved items
+1. Analyze the CURRENT MESSAGE in context of the RECENT CONVERSATION shown
+2. If the bot asked a question and the user is responding, interpret the response accordingly
+3. ALWAYS extract the query from the user's ACTUAL words in the current message
+4. The "response" field MUST be in Brazilian Portuguese and feel natural
+5. Respond ONLY with valid JSON. No markdown, no extra text.
 
-The "response" field MUST be in Brazilian Portuguese.`,
+EXAMPLES:
+- User says "madagascar" after bot asked nothing → search_movie, query: "Madagascar"  
+- User says "isso" after bot asked "Você quer Madagascar?" → search_movie, query: "Madagascar"
+- User says "filme" after bot asked "É série ou filme?" → Keep previous context, intent stays same
+- User says "sim" to confirm something → Use context to understand what to confirm`,
 			});
 
 			// Parse JSON da resposta
@@ -785,6 +988,127 @@ The "response" field MUST be in Brazilian Portuguese.`,
 						break;
 					}
 
+					// Verifica se há múltiplos títulos separados por vírgula
+					const titles = intent.query
+						.split(',')
+						.map((t) => t.trim())
+						.filter((t) => t.length > 0);
+
+					if (titles.length > 1) {
+						// Inicializa batch processing - confirmação individual
+						console.log(`📽️ Iniciando batch de ${titles.length} filmes: ${titles.join(', ')}`);
+
+						// Cria fila de batch
+						const batchQueue: ConversationContext['batch_queue'] = titles.map((query) => ({
+							query,
+							type: 'movie' as ItemType,
+							status: 'pending' as 'pending' | 'processing' | 'confirmed' | 'skipped',
+						}));
+
+						// Busca candidatos para o primeiro item
+						const firstTitle = batchQueue[0].query;
+						const firstResults = await enrichmentService.searchMovies(firstTitle);
+
+						if (firstResults.length === 0) {
+							// Marca como pulado e vai pro próximo
+							batchQueue[0].status = 'skipped';
+
+							// Se tem mais itens, processa o próximo
+							const nextPendingIndex = batchQueue.findIndex((b) => b.status === 'pending');
+							if (nextPendingIndex !== -1) {
+								const nextTitle = batchQueue[nextPendingIndex].query;
+								const nextResults = await enrichmentService.searchMovies(nextTitle);
+
+								await conversationService.updateState(conversation.id, 'awaiting_confirmation', {
+									batch_queue: batchQueue,
+									batch_current_index: nextPendingIndex,
+									batch_current_candidates: nextResults.slice(0, 5),
+									detected_type: 'movie',
+									batch_confirmed_items: [],
+								});
+
+								const options = nextResults
+									.slice(0, 5)
+									.map((m, i) => `${i + 1}. ${m.title} (${m.release_date?.split('-')[0]})`)
+									.join('\n');
+								responseText = `⚠️ Não achei "${firstTitle}"\n\n📽️ Próximo: "${nextTitle}"\n\n${options}\n\nQual desses? (ou "pular" para ir pro próximo)`;
+							} else {
+								responseText = `⚠️ Não achei nenhum dos filmes solicitados.`;
+							}
+						} else if (firstResults.length === 1) {
+							// Único resultado - salva direto
+							const movie = firstResults[0];
+							const metadata = await enrichmentService.enrich('movie', { tmdbId: movie.id });
+
+							const saveResult = await itemService.createItem({
+								userId: user.id,
+								type: 'movie',
+								title: movie.title,
+								metadata: metadata || undefined,
+							});
+
+							batchQueue[0].status = 'confirmed';
+							const confirmedItems = [movie];
+
+							// Processa próximo item
+							const nextPendingIndex = batchQueue.findIndex((b) => b.status === 'pending');
+							if (nextPendingIndex !== -1) {
+								const nextTitle = batchQueue[nextPendingIndex].query;
+								const nextResults = await enrichmentService.searchMovies(nextTitle);
+
+								await conversationService.updateState(conversation.id, 'awaiting_confirmation', {
+									batch_queue: batchQueue,
+									batch_current_index: nextPendingIndex,
+									batch_current_candidates: nextResults.slice(0, 5),
+									detected_type: 'movie',
+									batch_confirmed_items: confirmedItems,
+								});
+
+								const savedMsg = saveResult.isDuplicate
+									? `⚠️ "${movie.title}" já estava salvo`
+									: `✅ Salvei "${movie.title}" (${movie.release_date?.split('-')[0]})`;
+
+								if (nextResults.length === 0) {
+									responseText = `${savedMsg}\n\n⚠️ Não achei "${nextTitle}". Pulando...`;
+									// Continua processando...
+								} else {
+									const options = nextResults
+										.slice(0, 5)
+										.map((m, i) => `${i + 1}. ${m.title} (${m.release_date?.split('-')[0]})`)
+										.join('\n');
+									responseText = `${savedMsg}\n\n📽️ Próximo: "${nextTitle}"\n\n${options}\n\nQual desses? (ou "pular")`;
+								}
+							} else {
+								// Era o último
+								responseText = saveResult.isDuplicate
+									? `⚠️ "${movie.title}" já estava salvo. Batch concluído!`
+									: `✅ Salvei "${movie.title}" (${movie.release_date?.split('-')[0]}). Batch concluído!`;
+								await conversationService.updateState(conversation.id, 'idle', {});
+								await conversationService.addMessage(conversation.id, 'assistant', '[CONTEXT_CLEARED]');
+							}
+						} else {
+							// Múltiplos resultados - pede confirmação
+							await conversationService.updateState(conversation.id, 'awaiting_confirmation', {
+								batch_queue: batchQueue,
+								batch_current_index: 0,
+								batch_current_candidates: firstResults.slice(0, 5),
+								detected_type: 'movie',
+								batch_confirmed_items: [],
+							});
+
+							const remaining = titles.length - 1;
+							const options = firstResults
+								.slice(0, 5)
+								.map((m, i) => `${i + 1}. ${m.title} (${m.release_date?.split('-')[0]})`)
+								.join('\n');
+							responseText = `📽️ Batch de ${
+								titles.length
+							} filmes. Primeiro: "${firstTitle}"\n\n${options}\n\nQual desses? (${remaining} restante${remaining > 1 ? 's' : ''})`;
+						}
+						break;
+					}
+
+					// Fluxo normal para um único filme
 					const results = await enrichmentService.searchMovies(intent.query);
 
 					if (results.length === 0) {
@@ -833,6 +1157,57 @@ The "response" field MUST be in Brazilian Portuguese.`,
 						break;
 					}
 
+					// Verifica se há múltiplos títulos separados por vírgula
+					const titles = intent.query
+						.split(',')
+						.map((t) => t.trim())
+						.filter((t) => t.length > 0);
+
+					if (titles.length > 1) {
+						// Processar múltiplas séries
+						console.log(`📺 Processando ${titles.length} séries: ${titles.join(', ')}`);
+						const savedShows: string[] = [];
+						const notFoundShows: string[] = [];
+
+						for (const title of titles) {
+							const results = await enrichmentService.searchTVShows(title);
+
+							if (results.length > 0) {
+								const show = results[0]; // Pega o primeiro resultado
+								const metadata = await enrichmentService.enrich('tv_show', { tmdbId: show.id });
+
+								const saveResult = await itemService.createItem({
+									userId: user.id,
+									type: 'tv_show',
+									title: show.name,
+									metadata: metadata || undefined,
+								});
+
+								if (!saveResult.isDuplicate) {
+									savedShows.push(`${show.name} (${show.first_air_date?.split('-')[0]})`);
+								}
+							} else {
+								notFoundShows.push(title);
+							}
+						}
+
+						// Monta resposta
+						let response = '';
+						if (savedShows.length > 0) {
+							response += `✅ Salvei: ${savedShows.join(', ')}`;
+						}
+						if (notFoundShows.length > 0) {
+							response +=
+								savedShows.length > 0
+									? `\n\n⚠️ Não achei: ${notFoundShows.join(', ')}`
+									: `⚠️ Não achei nenhuma dessas séries: ${notFoundShows.join(', ')}`;
+						}
+
+						responseText = response || 'Hmm, tive problemas ao salvar essas séries 🤔';
+						break;
+					}
+
+					// Fluxo normal para uma única série
 					const results = await enrichmentService.searchTVShows(intent.query);
 
 					if (results.length === 0) {
