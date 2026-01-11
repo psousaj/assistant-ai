@@ -59,15 +59,19 @@ export class TelegramAdapter implements MessagingProvider {
       console.warn(
         "⚠️ Telegram webhook sem secret_token configurado. Configure TELEGRAM_WEBHOOK_SECRET em produção."
       );
-      return true; // Modo dev
+      return true; // Modo dev: aceita tudo
     }
 
-    // Suporta tanto Fetch API quanto Express
-    const secretToken = request.headers?.get?.("X-Telegram-Bot-Api-Secret-Token") || 
-                       request.headers?.["x-telegram-bot-api-secret-token"];
+    // Elysia/Fetch API usa Headers object com .get()
+    // Express usa objeto plain com lowercase keys
+    const headers = request.headers;
+    const secretToken = 
+      headers?.get?.("x-telegram-bot-api-secret-token") || // Fetch API (case-insensitive)
+      headers?.["x-telegram-bot-api-secret-token"];        // Express-style
 
     if (secretToken !== this.webhookSecret) {
-      console.error("❌ Telegram webhook secret inválido");
+      console.error("❌ Telegram webhook secret inválido ou ausente");
+      console.error(`   Recebido: "${secretToken || '(nenhum)'}"`);
       return false;
     }
 
