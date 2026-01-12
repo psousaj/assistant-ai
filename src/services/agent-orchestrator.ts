@@ -34,7 +34,7 @@ import {
 	GENERIC_ERROR,
 	formatItemsList,
 } from '@/config/prompts';
-import type { ConversationState } from '@/types';
+import type { ConversationState, AgentLLMResponse } from '@/types';
 
 export interface AgentContext {
 	userId: string;
@@ -184,34 +184,97 @@ export class AgentOrchestrator {
 			history: formattedHistory,
 		});
 
-		// TODO: PROCESSAR AgentLLMResponse (JSON schema)
-		// Por ora, mantém comportamento antigo até refatoração completa
-		// Ver: docs/IMPLEMENTATION-CHECKLIST.md
+		// ============================================================================
+		// PROCESSAR AgentLLMResponse (JSON schema)
+		// ============================================================================
 
-		// Se LLM solicitou tools, executa
 		const toolsUsed: string[] = [];
-		if (llmResponse.tool_calls && llmResponse.tool_calls.length > 0) {
-			console.log(`🔧 [Agent] LLM solicitou ${llmResponse.tool_calls.length} tools`);
+		let responseMessage: string = '';
+		let nextState: ConversationState = 'idle';
 
-			for (const toolCall of llmResponse.tool_calls) {
-				const result = await executeTool(toolCall.function.name as any, toolContext, JSON.parse(toolCall.function.arguments));
-				toolsUsed.push(toolCall.function.name);
-				if (result.success && result.message) {
-					// LLM já deve ter incluído isso na resposta
+		try {
+			// 1. Parsear JSON da resposta
+			const agentResponse = JSON.parse(llmResponse.message);
+			console.log(`🤖 [Agent] LLM action: ${agentResponse.action}`);
+
+			// 2. Validar schema_version
+			if (agentResponse.schema_version !== '1.0') {
+				console.warn(`⚠️ [Agent] Schema version incompatível: ${agentResponse.schema_version}`);
+			}
+
+			// 3. Executar baseado na ação
+			switch (agentResponse.action) {
+				case 'CALL_TOOL':
+					if (!agentResponse.tool) {
+						throw new Error('action=CALL_TOOL requer tool');
+					}
+
+					console.log(`🔧 [Agent] Executando tool: ${agentResponse.tool}`);
+					const result = await executeTool(agentResponse.tool as any, toolContext, agentResponse.args || {});
+
+					toolsUsed.push(agentResponse.tool);
+
+					if (result.success) {
+						// Se tem múltiplos resultados, pedir confirmação
+						if (result.data?.results && result.data.results.length > 1) {
+							// Formatar opções para o usuário
+							const options = result.data.results
+								.map((r: any, i: number) => `${i + 1}. ${r.title || r.name} ${r.year ? `(${r.year})` : ''}`)
+								.join('\n');
+
+							responseMessage = `Encontrei ${result.data.results.length} opções:\n\n${options}\n\nQual você quer salvar?`;
+							nextState = 'awaiting_confirmation';
+
+							// Salvar candidatos no contexto
+							await conversationService.updateState(conversation.id, nextState, {
+								candidates: result.data.results,
+								awaiting_selection: true,
+								detected_type: agentResponse.tool.replace('enrich_', ''),
+							});
+						} else {
+							// Sucesso simples
+							responseMessage = result.message || `✅ ${agentResponse.tool} executada com sucesso!`;
+						}
+					} else {
+						responseMessage = result.error || '❌ Erro ao executar ação.';
+					}
+					break;
+
+				case 'RESPOND':
+					// LLM quer responder diretamente (sem tool)
+					responseMessage = agentResponse.message || 'Ok!';
+					break;
+
+				case 'NOOP':
+					// Nada a fazer
+					console.log('🚫 [Agent] NOOP - nenhuma ação necessária');
+					responseMessage = null as any; // Sem resposta
+					console.error(`❌ [Agent] Action desconhecida: ${agentResponse.action}`);
+					responseMessage = 'Desculpe, não entendi o que fazer.';
+			}
+		} catch (parseError) {
+			// Fallback: se não for JSON, usar resposta direta (legacy)
+			console.warn('⚠️ [Agent] Resposta não é JSON válido, usando texto direto');
+			responseMessage = llmResponse.message;
+
+			// Tentar executar tools legadas (Gemini function calling)
+			if (llmResponse.tool_calls && llmResponse.tool_calls.length > 0) {
+				console.log(`🔧 [Agent] Executando ${llmResponse.tool_calls.length} tool calls (legacy)`);
+
+				for (const toolCall of llmResponse.tool_calls) {
+					const result = await executeTool(toolCall.function.name as any, toolContext, JSON.parse(toolCall.function.arguments));
+					toolsUsed.push(toolCall.function.name);
 				}
+			}
+
+			// Detectar confirmação heurística
+			if (llmResponse.message.includes('Qual') || llmResponse.message.includes('qual')) {
+				nextState = 'awaiting_confirmation';
 			}
 		}
 
-		// Determina próximo estado
-		let nextState: ConversationState = 'idle';
-
-		// Se há múltiplos resultados, aguarda confirmação
-		if (llmResponse.message.includes('Qual') || llmResponse.message.includes('qual')) {
-			nextState = 'awaiting_confirmation';
-		}
-
 		return {
-			message: llmResponse.message,
+			message: responseMessage,
 			state: nextState,
 			toolsUsed,
 		};
@@ -296,20 +359,15 @@ export class AgentOrchestrator {
 			conversationId: context.conversationId,
 		};
 
-		const result = await executeTool('save_memory', toolContext, {
-			type: 'note',
-			title: contentToSave.length > 100 ? contentToSave.substring(0, 97) + '...' : contentToSave,
-			metadata: {
-				fullContent: contentToSave,
-				savedFrom: 'previous_message',
-			},
+		const result = await executeTool('save_note', toolContext, {
+			content: contentToSave,
 		});
 
 		if (result.success) {
 			return {
 				message: SAVE_SUCCESS('✅ Salvei!'),
 				state: 'idle',
-				toolsUsed: ['save_memory'],
+				toolsUsed: ['save_note'],
 			};
 		} else {
 			return {

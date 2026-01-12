@@ -283,7 +283,7 @@ export async function enrich_movie(
 	}
 
 	try {
-		const results = await enrichmentService.searchMovies(params.title, params.year);
+		const results = await enrichmentService.searchMovies(params.title);
 
 		if (!results || results.length === 0) {
 			return {
@@ -297,10 +297,10 @@ export async function enrich_movie(
 			data: {
 				results: results.map((r) => ({
 					title: r.title,
-					year: r.year,
+					year: r.release_date ? parseInt(r.release_date.split('-')[0]) : undefined,
 					tmdb_id: r.id,
-					rating: r.rating,
-					overview: r.overview,
+					rating: r.vote_average || 0,
+					overview: r.overview || '',
 				})),
 			},
 		};
@@ -328,7 +328,7 @@ export async function enrich_tv_show(
 	}
 
 	try {
-		const results = await enrichmentService.searchTVShows(params.title, params.year);
+		const results = await enrichmentService.searchTVShows(params.title);
 
 		if (!results || results.length === 0) {
 			return {

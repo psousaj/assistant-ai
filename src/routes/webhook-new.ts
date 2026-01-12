@@ -139,10 +139,13 @@ async function processMessage(incomingMsg: IncomingMessage, provider: MessagingP
 			message: messageText,
 		});
 
-		// 6. ENVIA RESPOSTA
-		await provider.sendMessage(incomingMsg.externalId, agentResponse.message);
-
-		console.log(`✅ Resposta enviada: "${agentResponse.message.substring(0, 80)}..."`);
+		// 6. ENVIA RESPOSTA (se houver)
+		if (agentResponse.message && agentResponse.message.trim().length > 0) {
+			await provider.sendMessage(incomingMsg.externalId, agentResponse.message);
+			console.log(`✅ Resposta enviada: "${agentResponse.message.substring(0, 80)}..."`);
+		} else {
+			console.log('🚫 NOOP - nenhuma mensagem enviada ao usuário');
+		}
 
 		if (agentResponse.toolsUsed && agentResponse.toolsUsed.length > 0) {
 			console.log(`🔧 Tools usadas: ${agentResponse.toolsUsed.join(', ')}`);
