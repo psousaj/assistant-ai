@@ -18,6 +18,7 @@
     },
     "dependencies": {
         "@elysiajs/cors": "^1.1.1",
+        "@elysiajs/cron": "^1.4.1",
         "@elysiajs/openapi": "^1.4.13",
         "@elysiajs/opentelemetry": "^1.4.10",
         "@google/generative-ai": "^0.24.1",

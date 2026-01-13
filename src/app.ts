@@ -1,5 +1,6 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
+import { cron } from '@elysiajs/cron';
 import { openapi } from '@elysiajs/openapi';
 import { opentelemetry } from '@elysiajs/opentelemetry';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-node';
@@ -8,22 +9,7 @@ import { env } from '@/config/env';
 import { healthRouter } from '@/routes/health';
 import { webhookRoutes as webhookRouter } from '@/routes/webhook-new';
 import { itemsRouter } from '@/routes/items';
-import { runConversationCloseCron } from '@/services/queue-service';
-
-// ============================================================================
-// CRON DE BACKUP - Fecha conversas que deveriam estar fechadas
-// ============================================================================
-
-// Roda a cada 1 minuto
-setInterval(async () => {
-	try {
-		await runConversationCloseCron();
-	} catch (error) {
-		console.error('❌ [Cron] Erro ao rodar cron de fechamento:', error);
-	}
-}, 60 * 1000); // 1 minuto
-
-console.log('🕐 [Cron] Backup de fechamento de conversas ativado (1 min)');
+import { runConversationCloseCron, runAwaitingConfirmationTimeoutCron } from '@/services/queue-service';
 
 // ============================================================================
 // OPENTELEMETRY
@@ -32,15 +18,44 @@ console.log('🕐 [Cron] Backup de fechamento de conversas ativado (1 min)');
 // OpenTelemetry exporter (Uptrace)
 const traceExporter = env.UPTRACE_DSN
 	? new OTLPTraceExporter({
-			url: 'https://otlp.uptrace.dev/v1/traces',
-			headers: {
-				'uptrace-dsn': env.UPTRACE_DSN,
-			},
-	  })
+		url: 'https://otlp.uptrace.dev/v1/traces',
+		headers: {
+			'uptrace-dsn': env.UPTRACE_DSN,
+		},
+	})
 	: undefined;
 
 const app = new Elysia()
 	.use(cors())
+	// ============================================================================
+	// CRON JOBS - Fechamento automático de conversas
+	// ============================================================================
+	.use(
+		cron({
+			name: 'conversation-close-backup',
+			pattern: '* * * * *', // A cada 1 minuto
+			async run() {
+				try {
+					await runConversationCloseCron();
+				} catch (error) {
+					console.error('❌ [Cron] Erro no backup de fechamento:', error);
+				}
+			},
+		})
+	)
+	.use(
+		cron({
+			name: 'awaiting-confirmation-timeout',
+			pattern: '*/5 * * * *', // A cada 5 minutos
+			async run() {
+				try {
+					await runAwaitingConfirmationTimeoutCron();
+				} catch (error) {
+					console.error('❌ [Cron] Erro no timeout awaiting_confirmation:', error);
+				}
+			},
+		})
+	)
 	.use(
 		openapi({
 			documentation: {
@@ -60,9 +75,9 @@ const app = new Elysia()
 	.use(
 		traceExporter
 			? opentelemetry({
-					serviceName: 'nexo-ai',
-					spanProcessors: [new BatchSpanProcessor(traceExporter)],
-			  })
+				serviceName: 'nexo-ai',
+				spanProcessors: [new BatchSpanProcessor(traceExporter)],
+			})
 			: (app) => app
 	)
 	.onError(({ code, error, set }) => {

@@ -48,7 +48,7 @@ console.log(`✅ [Queue] Bull configurado com Redis (${env.REDIS_HOST})`);
 // ============================================================================
 
 /**
- * Worker idempotente: SEMPRE checa o estado no banco antes de fechar
+ * Worker idempotente com UPDATE condicional para prevenir race conditions
  */
 closeConversationQueue.process('close-conversation', async (job) => {
 	const { conversationId } = job.data;
@@ -56,39 +56,29 @@ closeConversationQueue.process('close-conversation', async (job) => {
 	try {
 		console.log(`🔄 [Queue] Processando fechamento: ${conversationId}`);
 
-		// Busca conversa no banco (source of truth)
-		const [convo] = await db
-			.select()
-			.from(conversations)
-			.where(eq(conversations.id, conversationId))
-			.limit(1);
-
-		if (!convo) {
-			console.log(`⚠️ [Queue] Conversa ${conversationId} não existe mais`);
-			return;
-		}
-
-		// Checagem vital: só fecha se ainda estiver waiting_close
-		if (convo.state !== 'waiting_close') {
-			console.log(`⚠️ [Queue] Conversa ${conversationId} não está em waiting_close (${convo.state}), ignorando`);
-			return;
-		}
-
-		// Se close_at ainda não passou, não fecha
-		if (convo.closeAt && convo.closeAt > new Date()) {
-			console.log(`⚠️ [Queue] Conversa ${conversationId} ainda não deve fechar (${convo.closeAt}), ignorando`);
-			return;
-		}
-
-		// ✅ FECHA A CONVERSA
-		await db
+		// UPDATE CONDICIONAL - previne race condition
+		// Só fecha se state='waiting_close' E close_at <= now
+		const result = await db
 			.update(conversations)
 			.set({
 				state: 'closed',
 				closeAt: null,
+				closeJobId: null,
 				updatedAt: new Date(),
 			})
-			.where(eq(conversations.id, conversationId));
+			.where(
+				and(
+					eq(conversations.id, conversationId),
+					eq(conversations.state, 'waiting_close'),
+					lte(conversations.closeAt, new Date())
+				)
+			)
+			.returning({ id: conversations.id });
+
+		if (result.length === 0) {
+			console.log(`⚠️ [Queue] Conversa ${conversationId} já foi fechada/cancelada`);
+			return;
+		}
 
 		console.log(`✅ [Queue] Conversa ${conversationId} fechada com sucesso`);
 	} catch (error) {
@@ -106,36 +96,36 @@ closeConversationQueue.process('close-conversation', async (job) => {
  */
 export async function scheduleConversationClose(conversationId: string): Promise<void> {
 	try {
-		// 1. Atualiza banco PRIMEIRO (source of truth)
 		const closeAt = new Date(Date.now() + 3 * 60 * 1000); // 3 minutos
+		const jobId = `close:${conversationId}`; // JobId determinístico para cancelamento O(1)
 
+		// 1. Atualiza banco PRIMEIRO (source of truth)
 		await db
 			.update(conversations)
 			.set({
 				state: 'waiting_close',
 				closeAt,
+				closeJobId: jobId,
 				updatedAt: new Date(),
 			})
 			.where(eq(conversations.id, conversationId));
 
 		console.log(`📅 [Queue] Banco atualizado: ${conversationId} fecha em ${closeAt.toISOString()}`);
 
-		// 2. Enfileira job delayed (otimização)
+		// 2. Enfileira job delayed com jobId customizado
 		await closeConversationQueue.add(
 			'close-conversation',
 			{ conversationId },
 			{
-				delay: 3 * 60 * 1000, // 3 minutos
-				attempts: 3, // Retry até 3x se falhar
-				backoff: {
-					type: 'exponential',
-					delay: 5000,
-				},
-				removeOnComplete: true, // Limpa job após sucesso
+				delay: 3 * 60 * 1000,
+				jobId, // JobId customizado para lookup O(1)
+				attempts: 3,
+				backoff: { type: 'exponential', delay: 5000 },
+				removeOnComplete: true,
 			}
 		);
 
-		console.log(`✅ [Queue] Job agendado para ${conversationId}`);
+		console.log(`✅ [Queue] Job ${jobId} agendado`);
 	} catch (error) {
 		console.error(`❌ [Queue] Erro ao agendar fechamento de ${conversationId}:`, error);
 		// Não joga erro pra cima: o cron de backup vai pegar
@@ -144,28 +134,37 @@ export async function scheduleConversationClose(conversationId: string): Promise
 
 /**
  * Cancela fechamento agendado (usuário mandou nova mensagem)
+ * Usa jobId salvo no banco para cancelamento O(1)
  */
 export async function cancelConversationClose(conversationId: string): Promise<void> {
 	try {
-		// 1. Atualiza banco PRIMEIRO
+		// 1. Busca o jobId do banco primeiro
+		const [convo] = await db
+			.select({ closeJobId: conversations.closeJobId })
+			.from(conversations)
+			.where(eq(conversations.id, conversationId))
+			.limit(1);
+
+		// 2. Atualiza banco
 		await db
 			.update(conversations)
 			.set({
 				state: 'idle',
 				closeAt: null,
+				closeJobId: null,
 				updatedAt: new Date(),
 			})
 			.where(eq(conversations.id, conversationId));
 
-		console.log(`🔄 [Queue] Banco atualizado: ${conversationId} voltou pra open`);
+		console.log(`🔄 [Queue] Banco atualizado: ${conversationId} voltou pra idle`);
 
-		// 2. Remove job da fila (se existir)
-		const jobs = await closeConversationQueue.getDelayed();
-		const job = jobs.find((j) => j.data.conversationId === conversationId);
-
-		if (job) {
-			await job.remove();
-			console.log(`🗑️ [Queue] Job removido para ${conversationId}`);
+		// 3. Remove job da fila com O(1) usando jobId salvo
+		if (convo?.closeJobId) {
+			const job = await closeConversationQueue.getJob(convo.closeJobId);
+			if (job) {
+				await job.remove();
+				console.log(`🗑️ [Queue] Job ${convo.closeJobId} removido`);
+			}
 		}
 	} catch (error) {
 		console.error(`❌ [Queue] Erro ao cancelar fechamento de ${conversationId}:`, error);
@@ -192,6 +191,7 @@ export async function runConversationCloseCron(): Promise<number> {
 			.set({
 				state: 'closed',
 				closeAt: null,
+				closeJobId: null,
 				updatedAt: now,
 			})
 			.where(
@@ -205,12 +205,52 @@ export async function runConversationCloseCron(): Promise<number> {
 		const count = result.length;
 
 		if (count > 0) {
-			console.log(`🔧 [Cron] ${count} conversa(s) fechada(s) pelo backup`);
+			console.log(`[CRON] Closed ${count} stale conversations`);
 		}
 
 		return count;
 	} catch (error) {
 		console.error('❌ [Cron] Erro no cron de fechamento:', error);
+		return 0;
+	}
+}
+
+/**
+ * Cron de timeout para awaiting_confirmation
+ * Fecha conversas em awaiting_confirmation há mais de 30 minutos
+ * Evita conversas "zumbi" quando usuário não responde
+ */
+export async function runAwaitingConfirmationTimeoutCron(): Promise<number> {
+	try {
+		const now = new Date();
+		const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000);
+
+		const result = await db
+			.update(conversations)
+			.set({
+				state: 'closed',
+				closeAt: null,
+				closeJobId: null,
+				context: null,
+				updatedAt: now,
+			})
+			.where(
+				and(
+					eq(conversations.state, 'awaiting_confirmation'),
+					lte(conversations.updatedAt, thirtyMinutesAgo)
+				)
+			)
+			.returning({ id: conversations.id });
+
+		const count = result.length;
+
+		if (count > 0) {
+			console.log(`[CRON] Closed ${count} stale awaiting_confirmation conversations`);
+		}
+
+		return count;
+	} catch (error) {
+		console.error('❌ [Cron] Erro no timeout de awaiting_confirmation:', error);
 		return 0;
 	}
 }
