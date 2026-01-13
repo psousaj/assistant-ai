@@ -12,6 +12,7 @@ import { agentOrchestrator } from '@/services/agent-orchestrator';
 import { whatsappAdapter, telegramAdapter, type IncomingMessage, type MessagingProvider } from '@/adapters/messaging';
 import { env } from '@/config/env';
 import { TIMEOUT_MESSAGE, GENERIC_ERROR } from '@/config/prompts';
+import { cancelConversationClose } from '@/services/queue-service';
 
 /**
  * Armazena timeouts de usuários ofensivos (em memória)
@@ -131,6 +132,13 @@ async function processMessage(incomingMsg: IncomingMessage, provider: MessagingP
 			throw new Error('Falha ao obter conversação');
 		}
 
+		// 4.1. CANCELA FECHAMENTO SE ESTAVA AGENDADO
+		// Nova mensagem = usuário voltou, cancela o timer de 3min
+		if (conversation.state === 'waiting_close') {
+			await cancelConversationClose(conversation.id);
+			console.log(`🔄 [Webhook] Fechamento cancelado para ${conversation.id}`);
+		}
+
 		// 5. DELEGA PARA ORQUESTRADOR (toda lógica aqui)
 		const agentResponse = await agentOrchestrator.processMessage({
 			userId: user.id,
@@ -142,7 +150,7 @@ async function processMessage(incomingMsg: IncomingMessage, provider: MessagingP
 		// 6. ENVIA RESPOSTA (se houver)
 		if (agentResponse.message && agentResponse.message.trim().length > 0) {
 			await provider.sendMessage(incomingMsg.externalId, agentResponse.message);
-			console.log(`✅ Resposta enviada: "${agentResponse.message.substring(0, 80)}..."`);
+			console.log(`✅ Resposta enviada (${agentResponse.message.length} chars)`);
 		} else {
 			console.log('🚫 NOOP - nenhuma mensagem enviada ao usuário');
 		}
