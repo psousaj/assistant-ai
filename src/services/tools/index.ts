@@ -451,6 +451,42 @@ export async function delete_all_memories(context: ToolContext, params: {}): Pro
 }
 
 // ============================================================================
+// UPDATE TOOLS
+// ============================================================================
+
+/**
+ * Tool: update_user_settings
+ * Atualiza configurações do usuário (nome do assistente, etc)
+ */
+export async function update_user_settings(
+	context: ToolContext,
+	params: {
+		assistantName?: string;
+	}
+): Promise<ToolOutput> {
+	try {
+		const { userService } = await import('@/services/user-service');
+
+		if (params.assistantName !== undefined) {
+			await userService.updateAssistantName(context.userId, params.assistantName);
+
+			return {
+				success: true,
+				message: params.assistantName ? `Nome atualizado para "${params.assistantName}"` : 'Nome resetado para "Nexo"',
+			};
+		}
+
+		return { success: false, error: 'Nenhuma configuração fornecida' };
+	} catch (error) {
+		console.error('❌ [Tool] Erro ao atualizar configurações:', error);
+		return {
+			success: false,
+			error: error instanceof Error ? error.message : 'Erro ao atualizar',
+		};
+	}
+}
+
+// ============================================================================
 // REGISTRO DE TOOLS
 // ============================================================================
 
@@ -473,6 +509,9 @@ export const AVAILABLE_TOOLS = {
 	// Delete tools (determinísticos)
 	delete_memory,
 	delete_all_memories,
+
+	// Update tools
+	update_user_settings,
 } as const;
 
 export type ToolName = keyof typeof AVAILABLE_TOOLS;

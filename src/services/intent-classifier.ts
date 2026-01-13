@@ -31,6 +31,7 @@ export type ActionVerb =
 	| 'delete_item'
 	| 'delete_selected'
 	| 'update_item'
+	| 'update_settings' // Atualizar configurações do usuário (nome do assistente, etc)
 	| 'get_details'
 	| 'confirm'
 	| 'deny'
@@ -48,6 +49,8 @@ export interface IntentResult {
 		url?: string;
 		refersToPrevious?: boolean;
 		target?: 'all' | 'item' | 'selection'; // Alvo da ação
+		settingType?: 'assistant_name' | 'preferences'; // Tipo de configuração
+		newValue?: string; // Novo valor para a configuração
 	};
 }
 
@@ -56,8 +59,8 @@ export interface IntentResult {
  */
 export class IntentClassifier {
 	private client?: OpenAI;
-	// private model = '@cf/meta/llama-4-scout-17b-16e-instruct';
-	private model = '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b';
+	// DeepSeek R1 retorna <think> tags, use Llama para JSON puro
+	private model = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
 	constructor() {
 		if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) {
@@ -87,13 +90,14 @@ export class IntentClassifier {
 				model: this.model,
 				messages: [
 					{
+						role: 'system',
+						content: INTENT_CLASSIFIER_PROMPT,
+					},
+					{
 						role: 'user',
 						content: message,
 					},
 				],
-				// System prompt via instructions (parâmetro específico Cloudflare Workers AI)
-				// @ts-ignore - instructions não é oficial no SDK mas funciona no Cloudflare
-				instructions: INTENT_CLASSIFIER_PROMPT,
 				// Forçar resposta JSON
 				response_format: {
 					type: 'json_object',
@@ -110,8 +114,12 @@ export class IntentClassifier {
 
 			console.log(`📥 [Intent] Resposta bruta: ${content.substring(0, 200)}`);
 
-			// Tentar extrair JSON se LLM retornou texto + JSON
-			let jsonContent = content.trim();
+			// Limpar tags <think>, <answer>, etc (modelos de reasoning)
+			let jsonContent = content
+				.replace(/<think>[\s\S]*?<\/think>/gi, '') // Remove blocos <think>...</think>
+				.replace(/<answer>/gi, '') // Remove tag <answer>
+				.replace(/<\/answer>/gi, '') // Remove tag </answer>
+				.trim();
 
 			// Se não começa com {, tentar encontrar JSON no texto
 			if (!jsonContent.startsWith('{')) {
@@ -237,7 +245,14 @@ export class IntentClassifier {
 			};
 		}
 
-		// 7. DESCONHECIDO (deixa para LLM decidir)
+		// 7. ATUALIZAR CONFIGURAÇÕES (nome do assistente, etc)
+		const updateResult = this.isUpdateSettings(lowerMsg, message);
+		if (updateResult) {
+			console.log(`🎯 [Intent] ${updateResult.intent} (${updateResult.action}, regex) - conf: ${updateResult.confidence}`);
+			return updateResult;
+		}
+
+		// 8. DESCONHECIDO (deixa para LLM decidir)
 		console.log(`🎯 [Intent] unknown (regex) - conf: 0.5`);
 		return {
 			intent: 'unknown',
@@ -410,6 +425,44 @@ export class IntentClassifier {
 			'pra que',
 		];
 		return questionWords.some((w) => msg.includes(w));
+	}
+
+	/**
+	 * Verifica se é pedido para atualizar configurações (nome do assistente, etc)
+	 */
+	private isUpdateSettings(msg: string, originalMsg: string): IntentResult | null {
+		// Detectar pedido para mudar nome do assistente
+		const nameChangePatterns = [
+			/posso te (chamar|dar) (de|um|outro)? ?(nome|apelido)?/i,
+			/quero te chamar de (.+)/i,
+			/(muda|altera|troca) (seu|teu) nome (para|pra) (.+)/i,
+			/te chamo de (.+)/i,
+			/vou te chamar de (.+)/i,
+		];
+
+		for (const pattern of nameChangePatterns) {
+			const match = originalMsg.match(pattern);
+			if (match) {
+				// Se é pergunta (posso...), não extrai o nome ainda
+				const isQuestion = msg.startsWith('posso') || msg.includes('posso');
+
+				// Tenta extrair o novo nome (último grupo de captura)
+				const newName = match[match.length - 1]?.trim();
+
+				return {
+					intent: 'update_content',
+					action: 'update_settings',
+					confidence: 0.9,
+					entities: {
+						settingType: 'assistant_name',
+						newValue: isQuestion ? undefined : newName,
+						query: isQuestion ? 'assistant_name' : undefined,
+					},
+				};
+			}
+		}
+
+		return null;
 	}
 
 	/**

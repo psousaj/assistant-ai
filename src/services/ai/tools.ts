@@ -218,6 +218,25 @@ export const deleteItemsTool: Tool = {
 	},
 };
 
+// ============================================================================
+// UPDATE TOOLS
+// ============================================================================
+
+export const updateUserSettingsTool: Tool = {
+	name: 'update_user_settings',
+	description: 'Atualiza configurações do usuário (nome do assistente, preferências).',
+	parameters: {
+		type: 'object',
+		properties: {
+			assistantName: {
+				type: 'string',
+				description: 'Nome customizado para o assistente',
+			},
+		},
+		required: [],
+	},
+};
+
 /**
  * Lista de todas as tools disponíveis (alinhada com tools/index.ts)
  */
@@ -236,6 +255,8 @@ export const availableTools: Tool[] = [
 	enrichVideoTool,
 	// Delete
 	deleteItemsTool,
+	// Update
+	updateUserSettingsTool,
 ];
 
 /**
