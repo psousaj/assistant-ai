@@ -23,7 +23,10 @@ export class AIService {
 
 		// Inicializa providers disponíveis (na ordem de prioridade)
 		if (env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) {
-			this.providers.set('cloudflare', new CloudflareProvider(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN, '@cf/openai/gpt-oss-120b'));
+			this.providers.set(
+				'cloudflare',
+				new CloudflareProvider(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN, 'llama-4-scout-17b-16e-instruct')
+			);
 			console.log('✅ [AI] Cloudflare Workers AI configurado');
 		} else {
 			console.log('⚠️ [AI] Cloudflare Workers AI não configurado (faltam CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_API_TOKEN)');
@@ -82,11 +85,9 @@ export class AIService {
 				systemPrompt: prompt,
 			});
 
-			const preview = response.message.length > 100 
-				? `${response.message.substring(0, 100)}...`
-				: response.message;
+			const preview = response.message.length > 100 ? `${response.message.substring(0, 100)}...` : response.message;
 			console.log(`✅ [AI] Resposta de ${this.currentProvider} (${response.message.length} chars)`);
-			
+
 			// Se sucesso, mantém o provider atual
 			return response;
 		} catch (error: any) {

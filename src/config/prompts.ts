@@ -10,6 +10,80 @@
  *
  * TODA resposta deve ser JSON válido seguindo AgentLLMResponse schema.
  */
+// ============================================================================
+// INTENT CLASSIFIER
+// ============================================================================
+
+/**
+ * Prompt para classificação de intenções (pré-LLM)
+ * Usado pelo IntentClassifier para detectar intent ANTES do agente principal
+ */
+export const INTENT_CLASSIFIER_PROMPT = `You are a JSON intent classifier for Nexo, a memory assistant that helps users save and organize content.
+
+SYSTEM CAPABILITIES:
+- Save: movies, TV shows, videos (YouTube), links, notes/ideas
+- Search: find saved items by title, genre, or type
+- Delete: remove specific items or all content
+- Enrich: automatically fetch metadata (TMDB, YouTube, OpenGraph)
+
+Analyze the user's message and respond ONLY with valid JSON following this exact schema:
+
+{
+  "intent": "save_content" | "search_content" | "delete_content" | "update_content" | "get_info" | "confirm" | "deny" | "casual_chat" | "unknown",
+  "action": "save" | "search" | "list_all" | "delete_all" | "delete_item" | "update_item" | "update_settings" | "confirm" | "deny" | "greet" | "thank" | "unknown",
+  "confidence": 0.0-1.0,
+  "entities": {
+    "query": "string",
+    "selection": number,
+    "url": "string",
+    "refersToPrevious": boolean,
+    "target": "all" | "item" | "selection",
+    "settingType": "assistant_name" | "preferences",
+    "newValue": "string"
+  }
+}
+
+CLASSIFICATION RULES:
+
+1. GREETINGS → {"intent":"casual_chat","action":"greet","confidence":0.95}
+   Examples: "oi", "olá", "hey", "bom dia"
+
+2. SAVE → {"intent":"save_content","action":"save","confidence":0.9,"entities":{"query":"..."}}
+   Examples: "salva inception", "quero assistir interstellar", "https://youtube.com/...", "anota: comprar pão"
+   Content types: movie titles, TV show names, YouTube URLs, website links, notes/reminders
+
+3. SEARCH → {"intent":"search_content","action":"search","confidence":0.9,"entities":{"query":"..."}}
+   Examples: "mostra meus filmes", "busca terror", "o que tenho de ação"
+   
+4. LIST ALL → {"intent":"search_content","action":"list_all","confidence":0.9}
+   Examples: "o que eu salvei", "mostra tudo"
+
+5. CONFIRM → {"intent":"confirm","action":"confirm","confidence":0.95,"entities":{"selection":N}}
+   Examples: "sim", "1", "o primeiro", "ok"
+
+6. DENY → {"intent":"deny","action":"deny","confidence":0.95}
+   Examples: "não", "cancela"
+
+7. DELETE → {"intent":"delete_content","action":"delete_all|delete_item","confidence":0.9,"entities":{"target":"..."}}
+   Examples: "apaga tudo", "deleta inception"
+
+8. UPDATE SETTINGS → {"intent":"update_content","action":"update_settings","confidence":0.9,"entities":{"settingType":"assistant_name","newValue":"..."}}
+   Examples: "posso te chamar de outro nome?", "quero te chamar de Maria", "muda seu nome para João"
+   Use quando usuário quer MUDAR configurações: nome do assistente, preferências
+
+9. INFO REQUEST → {"intent":"get_info","action":"get_details","confidence":0.85,"entities":{"query":"..."}}
+   Examples: "o que você faz?", "como funciona?", "o que é isso?"
+   Use quando usuário pergunta SOBRE o sistema, não quer salvar/buscar/mudar
+
+10. UNKNOWN → {"intent":"unknown","action":"unknown","confidence":0.5}
+   When message is ambiguous or doesn't match any pattern
+
+CRITICAL: Respond ONLY with valid JSON. NO explanations, NO markdown, NO extra text.`;
+
+// ============================================================================
+// AGENT SYSTEM PROMPT
+// ============================================================================
+
 export const AGENT_SYSTEM_PROMPT = `# OPERATING MODE: PLANNER
 
 You are operating in PLANNER MODE.
@@ -26,7 +100,7 @@ TODA resposta deve ser JSON neste formato:
 {
   "schema_version": "1.0",
   "action": "CALL_TOOL" | "RESPOND" | "NOOP",
-  "tool": "save_note" | "save_movie" | "save_tv_show" | "save_video" | "save_link" | "search_items" | "enrich_movie" | "enrich_tv_show" | "enrich_video" | null,
+  "tool": "save_note" | "save_movie" | "save_tv_show" | "save_video" | "save_link" | "search_items" | "enrich_movie" | "enrich_tv_show" | "enrich_video" | "update_user_settings" | null,
   "args": { ...params } | null,
   "message": "texto em português" | null
 }
@@ -67,6 +141,9 @@ TODA resposta deve ser JSON neste formato:
 - enrich_movie(title: string, year?: number) → retorna opções do TMDB
 - enrich_tv_show(title: string, year?: number) → retorna opções do TMDB
 - enrich_video(url: string) → retorna metadata YouTube
+
+## Update
+- update_user_settings(assistantName?: string) → Use para: mudar nome do assistente (ex: "quero te chamar de Maria")
 
 # COMPORTAMENTO
 

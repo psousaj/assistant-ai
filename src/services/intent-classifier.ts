@@ -1,10 +1,14 @@
+import OpenAI from 'openai';
+import { env } from '@/config/env';
+import { INTENT_CLASSIFIER_PROMPT } from '@/config/prompts';
+
 /**
- * Classificador de intenções determinístico
+ * Classificador de intenções usando Cloudflare Workers AI
  *
- * Segue o padrão de separação de responsabilidades:
- * - Detecta intenção ANTES de chamar o LLM
- * - Lógica determinística, não probabilística
- * - Testável e previsível
+ * Usa modelo @cf/meta/llama-4-scout-17b-16e-instruct via SDK OpenAI
+ * - Input: mensagem simples do usuário
+ * - Output: JSON estruturado
+ * - Fallback: regex determinístico se API falhar
  */
 
 export type UserIntent =
@@ -27,6 +31,7 @@ export type ActionVerb =
 	| 'delete_item'
 	| 'delete_selected'
 	| 'update_item'
+	| 'update_settings' // Atualizar configurações do usuário (nome do assistente, etc)
 	| 'get_details'
 	| 'confirm'
 	| 'deny'
@@ -44,32 +49,122 @@ export interface IntentResult {
 		url?: string;
 		refersToPrevious?: boolean;
 		target?: 'all' | 'item' | 'selection'; // Alvo da ação
+		settingType?: 'assistant_name' | 'preferences'; // Tipo de configuração
+		newValue?: string; // Novo valor para a configuração
 	};
 }
 
 /**
- * Classificador de intenções (determinístico)
+ * Classificador de intenções usando LLM
  */
 export class IntentClassifier {
+	private client?: OpenAI;
+	// DeepSeek R1 retorna <think> tags, use Llama para JSON puro
+	private model = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+
+	constructor() {
+		if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) {
+			console.warn('⚠️ [Intent Classifier] Cloudflare não configurado, usando fallback regex');
+		} else {
+			this.client = new OpenAI({
+				apiKey: env.CLOUDFLARE_API_TOKEN,
+				baseURL: `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/v1`,
+			});
+			console.log('✅ [Intent Classifier] Cloudflare Workers AI configurado');
+		}
+	}
+
 	/**
 	 * Detecta intenção da mensagem do usuário
 	 */
-	classify(message: string): IntentResult {
+	async classify(message: string): Promise<IntentResult> {
+		// Fallback regex se Cloudflare não configurado
+		if (!this.client) {
+			return this.classifyWithRegex(message);
+		}
+
+		try {
+			console.log(`🎯 [Intent] Classificando: "${message.substring(0, 50)}..."`);
+
+			const response = await this.client.chat.completions.create({
+				model: this.model,
+				messages: [
+					{
+						role: 'system',
+						content: INTENT_CLASSIFIER_PROMPT,
+					},
+					{
+						role: 'user',
+						content: message,
+					},
+				],
+				// Forçar resposta JSON
+				response_format: {
+					type: 'json_object',
+				},
+				temperature: 0.1, // Muito baixo para consistência
+				max_tokens: 200, // Reduzido, JSON é pequeno
+			});
+
+			const content = response.choices[0]?.message?.content;
+			if (!content) {
+				console.warn('⚠️ [Intent] Resposta vazia, usando fallback');
+				return this.classifyWithRegex(message);
+			}
+
+			console.log(`📥 [Intent] Resposta bruta: ${content.substring(0, 200)}`);
+
+			// Limpar tags <think>, <answer>, etc (modelos de reasoning)
+			let jsonContent = content
+				.replace(/<think>[\s\S]*?<\/think>/gi, '') // Remove blocos <think>...</think>
+				.replace(/<answer>/gi, '') // Remove tag <answer>
+				.replace(/<\/answer>/gi, '') // Remove tag </answer>
+				.trim();
+
+			// Se não começa com {, tentar encontrar JSON no texto
+			if (!jsonContent.startsWith('{')) {
+				const jsonMatch = jsonContent.match(/\{[\s\S]*\}/);
+				if (jsonMatch) {
+					jsonContent = jsonMatch[0];
+				} else {
+					console.warn('⚠️ [Intent] Resposta não é JSON:', content.substring(0, 100));
+					return this.classifyWithRegex(message);
+				}
+			}
+
+			const result: IntentResult = JSON.parse(jsonContent);
+			console.log(`🎯 [Intent] ${result.intent} (${result.action}) - conf: ${result.confidence}`);
+
+			return result;
+		} catch (error) {
+			console.error('❌ [Intent] Erro ao classificar:', error);
+			return this.classifyWithRegex(message);
+		}
+	}
+
+	/**
+	 * Fallback com regex (mantém lógica antiga)
+	 */
+	private classifyWithRegex(message: string): IntentResult {
+		console.log(`🎯 [Intent] Usando fallback regex: "${message.substring(0, 50)}..."`);
 		const lowerMsg = message.toLowerCase().trim();
 
 		// 1. CONFIRMAÇÃO/NEGAÇÃO (mais específico primeiro)
 		if (this.isConfirmation(lowerMsg)) {
-			return {
-				intent: 'confirm',
-				action: 'confirm',
+			const result = {
+				intent: 'confirm' as const,
+				action: 'confirm' as const,
 				confidence: 0.95,
 				entities: {
 					selection: this.extractSelection(message),
 				},
 			};
+			console.log(`🎯 [Intent] confirm (regex) - conf: ${result.confidence}`);
+			return result;
 		}
 
 		if (this.isDenial(lowerMsg)) {
+			console.log(`🎯 [Intent] deny (regex) - conf: 0.95`);
 			return {
 				intent: 'deny',
 				action: 'deny',
@@ -80,22 +175,27 @@ export class IntentClassifier {
 		// 2. DELETAR (CRÍTICO: detectar antes de search)
 		const deleteResult = this.isDeleteRequest(lowerMsg);
 		if (deleteResult) {
+			console.log(`🎯 [Intent] ${deleteResult.intent} (${deleteResult.action}, regex) - conf: ${deleteResult.confidence}`);
 			return deleteResult;
 		}
 
 		// 3. BUSCA/LISTAGEM
 		if (this.isSearch(lowerMsg)) {
 			const query = this.extractSearchQuery(message);
-			return {
-				intent: 'search_content',
-				action: query ? 'search' : 'list_all',
+			const action = query ? 'search' : 'list_all';
+			const result = {
+				intent: 'search_content' as const,
+				action: action as ActionVerb,
 				confidence: 0.9,
 				entities: { query },
 			};
+			console.log(`🎯 [Intent] ${result.intent} (${result.action}, regex) - conf: ${result.confidence}`);
+			return result;
 		}
 
 		// 4. SOLICITAR INFORMAÇÕES
 		if (this.isInfoRequest(lowerMsg)) {
+			console.log(`🎯 [Intent] get_info (regex) - conf: 0.85`);
 			return {
 				intent: 'get_info',
 				action: 'get_details',
@@ -118,10 +218,11 @@ export class IntentClassifier {
 			];
 
 			const refersToPrevious = saveReferencePatterns.some((pattern) => pattern.test(lowerMsg));
+			const action = refersToPrevious ? 'save_previous' : 'save';
 
-			return {
-				intent: 'save_content',
-				action: refersToPrevious ? 'save_previous' : 'save',
+			const result = {
+				intent: 'save_content' as const,
+				action: action as ActionVerb,
 				confidence: 0.9,
 				entities: {
 					query: refersToPrevious ? undefined : message.trim(),
@@ -129,11 +230,14 @@ export class IntentClassifier {
 					refersToPrevious,
 				},
 			};
+			console.log(`🎯 [Intent] ${result.intent} (${result.action}, regex) - conf: ${result.confidence}`);
+			return result;
 		}
 
 		// 6. CONVERSA CASUAL
 		if (this.isCasualChat(lowerMsg)) {
 			const action = this.getCasualAction(lowerMsg);
+			console.log(`🎯 [Intent] casual_chat (${action}, regex) - conf: 0.8`);
 			return {
 				intent: 'casual_chat',
 				action,
@@ -141,7 +245,15 @@ export class IntentClassifier {
 			};
 		}
 
-		// 7. DESCONHECIDO (deixa para LLM decidir)
+		// 7. ATUALIZAR CONFIGURAÇÕES (nome do assistente, etc)
+		const updateResult = this.isUpdateSettings(lowerMsg, message);
+		if (updateResult) {
+			console.log(`🎯 [Intent] ${updateResult.intent} (${updateResult.action}, regex) - conf: ${updateResult.confidence}`);
+			return updateResult;
+		}
+
+		// 8. DESCONHECIDO (deixa para LLM decidir)
+		console.log(`🎯 [Intent] unknown (regex) - conf: 0.5`);
 		return {
 			intent: 'unknown',
 			action: 'unknown',
@@ -313,6 +425,44 @@ export class IntentClassifier {
 			'pra que',
 		];
 		return questionWords.some((w) => msg.includes(w));
+	}
+
+	/**
+	 * Verifica se é pedido para atualizar configurações (nome do assistente, etc)
+	 */
+	private isUpdateSettings(msg: string, originalMsg: string): IntentResult | null {
+		// Detectar pedido para mudar nome do assistente
+		const nameChangePatterns = [
+			/posso te (chamar|dar) (de|um|outro)? ?(nome|apelido)?/i,
+			/quero te chamar de (.+)/i,
+			/(muda|altera|troca) (seu|teu) nome (para|pra) (.+)/i,
+			/te chamo de (.+)/i,
+			/vou te chamar de (.+)/i,
+		];
+
+		for (const pattern of nameChangePatterns) {
+			const match = originalMsg.match(pattern);
+			if (match) {
+				// Se é pergunta (posso...), não extrai o nome ainda
+				const isQuestion = msg.startsWith('posso') || msg.includes('posso');
+
+				// Tenta extrair o novo nome (último grupo de captura)
+				const newName = match[match.length - 1]?.trim();
+
+				return {
+					intent: 'update_content',
+					action: 'update_settings',
+					confidence: 0.9,
+					entities: {
+						settingType: 'assistant_name',
+						newValue: isQuestion ? undefined : newName,
+						query: isQuestion ? 'assistant_name' : undefined,
+					},
+				};
+			}
+		}
+
+		return null;
 	}
 
 	/**
