@@ -1,10 +1,14 @@
+import OpenAI from 'openai';
+import { env } from '@/config/env';
+import { INTENT_CLASSIFIER_PROMPT } from '@/config/prompts';
+
 /**
- * Classificador de intenções determinístico
+ * Classificador de intenções usando Cloudflare Workers AI
  *
- * Segue o padrão de separação de responsabilidades:
- * - Detecta intenção ANTES de chamar o LLM
- * - Lógica determinística, não probabilística
- * - Testável e previsível
+ * Usa modelo @cf/meta/llama-4-scout-17b-16e-instruct via SDK OpenAI
+ * - Input: mensagem simples do usuário
+ * - Output: JSON estruturado
+ * - Fallback: regex determinístico se API falhar
  */
 
 export type UserIntent =
@@ -48,28 +52,111 @@ export interface IntentResult {
 }
 
 /**
- * Classificador de intenções (determinístico)
+ * Classificador de intenções usando LLM
  */
 export class IntentClassifier {
+	private client?: OpenAI;
+	// private model = '@cf/meta/llama-4-scout-17b-16e-instruct';
+	private model = '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b';
+
+	constructor() {
+		if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) {
+			console.warn('⚠️ [Intent Classifier] Cloudflare não configurado, usando fallback regex');
+		} else {
+			this.client = new OpenAI({
+				apiKey: env.CLOUDFLARE_API_TOKEN,
+				baseURL: `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/v1`,
+			});
+			console.log('✅ [Intent Classifier] Cloudflare Workers AI configurado');
+		}
+	}
+
 	/**
 	 * Detecta intenção da mensagem do usuário
 	 */
-	classify(message: string): IntentResult {
+	async classify(message: string): Promise<IntentResult> {
+		// Fallback regex se Cloudflare não configurado
+		if (!this.client) {
+			return this.classifyWithRegex(message);
+		}
+
+		try {
+			console.log(`🎯 [Intent] Classificando: "${message.substring(0, 50)}..."`);
+
+			const response = await this.client.chat.completions.create({
+				model: this.model,
+				messages: [
+					{
+						role: 'user',
+						content: message,
+					},
+				],
+				// System prompt via instructions (parâmetro específico Cloudflare Workers AI)
+				// @ts-ignore - instructions não é oficial no SDK mas funciona no Cloudflare
+				instructions: INTENT_CLASSIFIER_PROMPT,
+				// Forçar resposta JSON
+				response_format: {
+					type: 'json_object',
+				},
+				temperature: 0.1, // Muito baixo para consistência
+				max_tokens: 200, // Reduzido, JSON é pequeno
+			});
+
+			const content = response.choices[0]?.message?.content;
+			if (!content) {
+				console.warn('⚠️ [Intent] Resposta vazia, usando fallback');
+				return this.classifyWithRegex(message);
+			}
+
+			console.log(`📥 [Intent] Resposta bruta: ${content.substring(0, 200)}`);
+
+			// Tentar extrair JSON se LLM retornou texto + JSON
+			let jsonContent = content.trim();
+
+			// Se não começa com {, tentar encontrar JSON no texto
+			if (!jsonContent.startsWith('{')) {
+				const jsonMatch = jsonContent.match(/\{[\s\S]*\}/);
+				if (jsonMatch) {
+					jsonContent = jsonMatch[0];
+				} else {
+					console.warn('⚠️ [Intent] Resposta não é JSON:', content.substring(0, 100));
+					return this.classifyWithRegex(message);
+				}
+			}
+
+			const result: IntentResult = JSON.parse(jsonContent);
+			console.log(`🎯 [Intent] ${result.intent} (${result.action}) - conf: ${result.confidence}`);
+
+			return result;
+		} catch (error) {
+			console.error('❌ [Intent] Erro ao classificar:', error);
+			return this.classifyWithRegex(message);
+		}
+	}
+
+	/**
+	 * Fallback com regex (mantém lógica antiga)
+	 */
+	private classifyWithRegex(message: string): IntentResult {
+		console.log(`🎯 [Intent] Usando fallback regex: "${message.substring(0, 50)}..."`);
 		const lowerMsg = message.toLowerCase().trim();
 
 		// 1. CONFIRMAÇÃO/NEGAÇÃO (mais específico primeiro)
 		if (this.isConfirmation(lowerMsg)) {
-			return {
-				intent: 'confirm',
-				action: 'confirm',
+			const result = {
+				intent: 'confirm' as const,
+				action: 'confirm' as const,
 				confidence: 0.95,
 				entities: {
 					selection: this.extractSelection(message),
 				},
 			};
+			console.log(`🎯 [Intent] confirm (regex) - conf: ${result.confidence}`);
+			return result;
 		}
 
 		if (this.isDenial(lowerMsg)) {
+			console.log(`🎯 [Intent] deny (regex) - conf: 0.95`);
 			return {
 				intent: 'deny',
 				action: 'deny',
@@ -80,22 +167,27 @@ export class IntentClassifier {
 		// 2. DELETAR (CRÍTICO: detectar antes de search)
 		const deleteResult = this.isDeleteRequest(lowerMsg);
 		if (deleteResult) {
+			console.log(`🎯 [Intent] ${deleteResult.intent} (${deleteResult.action}, regex) - conf: ${deleteResult.confidence}`);
 			return deleteResult;
 		}
 
 		// 3. BUSCA/LISTAGEM
 		if (this.isSearch(lowerMsg)) {
 			const query = this.extractSearchQuery(message);
-			return {
-				intent: 'search_content',
-				action: query ? 'search' : 'list_all',
+			const action = query ? 'search' : 'list_all';
+			const result = {
+				intent: 'search_content' as const,
+				action: action as ActionVerb,
 				confidence: 0.9,
 				entities: { query },
 			};
+			console.log(`🎯 [Intent] ${result.intent} (${result.action}, regex) - conf: ${result.confidence}`);
+			return result;
 		}
 
 		// 4. SOLICITAR INFORMAÇÕES
 		if (this.isInfoRequest(lowerMsg)) {
+			console.log(`🎯 [Intent] get_info (regex) - conf: 0.85`);
 			return {
 				intent: 'get_info',
 				action: 'get_details',
@@ -118,10 +210,11 @@ export class IntentClassifier {
 			];
 
 			const refersToPrevious = saveReferencePatterns.some((pattern) => pattern.test(lowerMsg));
+			const action = refersToPrevious ? 'save_previous' : 'save';
 
-			return {
-				intent: 'save_content',
-				action: refersToPrevious ? 'save_previous' : 'save',
+			const result = {
+				intent: 'save_content' as const,
+				action: action as ActionVerb,
 				confidence: 0.9,
 				entities: {
 					query: refersToPrevious ? undefined : message.trim(),
@@ -129,11 +222,14 @@ export class IntentClassifier {
 					refersToPrevious,
 				},
 			};
+			console.log(`🎯 [Intent] ${result.intent} (${result.action}, regex) - conf: ${result.confidence}`);
+			return result;
 		}
 
 		// 6. CONVERSA CASUAL
 		if (this.isCasualChat(lowerMsg)) {
 			const action = this.getCasualAction(lowerMsg);
+			console.log(`🎯 [Intent] casual_chat (${action}, regex) - conf: 0.8`);
 			return {
 				intent: 'casual_chat',
 				action,
@@ -142,6 +238,7 @@ export class IntentClassifier {
 		}
 
 		// 7. DESCONHECIDO (deixa para LLM decidir)
+		console.log(`🎯 [Intent] unknown (regex) - conf: 0.5`);
 		return {
 			intent: 'unknown',
 			action: 'unknown',

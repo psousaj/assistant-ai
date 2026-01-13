@@ -62,7 +62,7 @@ export class AgentOrchestrator {
 		console.log('🎯 [Agent] Processando mensagem:', context.message);
 
 		// 1. CLASSIFICAR INTENÇÃO (determinístico)
-		const intent = intentClassifier.classify(context.message);
+		const intent = await intentClassifier.classify(context.message);
 		console.log(`🧠 [Agent] Intenção detectada: ${intent.intent} (${intent.confidence})`);
 
 		// 2. BUSCAR ESTADO ATUAL
@@ -204,14 +204,14 @@ export class AgentOrchestrator {
 		try {
 			// 1. Parsear JSON da resposta (remove markdown code blocks)
 			const agentResponse = parseJSONFromLLM(llmResponse.message);
-			
+
 			// 2. Validar schema
 			if (!isValidAgentResponse(agentResponse)) {
 				throw new Error('Resposta LLM não segue schema AgentLLMResponse');
 			}
-			
+
 			console.log(`🤖 [Agent] LLM action: ${agentResponse.action}`);
-4
+			4;
 			// 3. Validar schema_version
 			if (agentResponse.schema_version !== '1.0') {
 				console.warn(`⚠️ [Agent] Schema version incompatível: ${agentResponse.schema_version}`);
@@ -273,7 +273,7 @@ export class AgentOrchestrator {
 					console.log('🚫 [Agent] NOOP - nenhuma ação necessária');
 					responseMessage = null as any; // Sem resposta
 					break;
-				
+
 				default:
 					console.error(`❌ [Agent] Action desconhecida: ${agentResponse.action}`);
 					responseMessage = 'Desculpe, não entendi o que fazer.';
@@ -282,7 +282,7 @@ export class AgentOrchestrator {
 			// Fallback: NUNCA enviar JSON cru ao usuário
 			console.error('❌ [Agent] Erro ao processar resposta LLM:', parseError);
 			console.error('🔍 [Agent] Resposta original:', llmResponse.message.substring(0, 500));
-			
+
 			responseMessage = 'Desculpe, tive um problema ao processar sua mensagem. Pode tentar de novo?';
 		}
 
@@ -302,7 +302,8 @@ export class AgentOrchestrator {
 
 		// Se há candidatos aguardando seleção
 		if (contextData.candidates && Array.isArray(contextData.candidates)) {
-			const selection = intentClassifier.classify(context.message).entities?.selection;
+			const intent = await intentClassifier.classify(context.message);
+			const selection = intent.entities?.selection;
 
 			if (selection && selection <= contextData.candidates.length) {
 				const selected = contextData.candidates[selection - 1];

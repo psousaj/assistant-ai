@@ -1,10 +1,13 @@
 import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai';
+import { encode } from '@toon-format/toon';
 import type { AIProvider, AIResponse, Message } from './types';
 
 /**
  * Gemini Provider usando SDK oficial
  * Modo JSON APENAS - sem function calling
  * Alinhado com arquitetura determinística v0.3.0
+ *
+ * Histórico convertido para TOON para reduzir tokens de entrada
  */
 export class GeminiProvider implements AIProvider {
 	private readonly client: GoogleGenerativeAI;
@@ -34,15 +37,29 @@ export class GeminiProvider implements AIProvider {
 		const { message, history = [], systemPrompt } = params;
 
 		try {
-			// Cria chat session com histórico
-			const chatHistory = history.map((msg) => ({
-				role: msg.role === 'user' ? 'user' : 'model',
-				parts: [{ text: msg.content }],
-			}));
+			console.log(`🤖 [Gemini] Enviando para ${this.modelName}`);
 
-			// Configura o chat com ou sem system instruction
+			// Converter histórico para TOON (economiza 30-60% tokens)
+			let userMessage = message;
+
+			if (history.length > 0) {
+				// Garantir que histórico começa com user (requisito do Gemini)
+				const validHistory =
+					history[0]?.role === 'user' ? history : [{ role: 'user' as const, content: '(conversa anterior)' }, ...history];
+
+				const historyData = validHistory.map((msg) => ({
+					role: msg.role,
+					content: msg.content,
+				}));
+
+				const toonHistory = encode(historyData, { delimiter: '\t' });
+
+				userMessage = `Histórico da conversa em formato TOON (tab-separated):\n\n\`\`\`toon\n${toonHistory}\n\`\`\`\n\nMensagem atual: ${message}`;
+			}
+
+			// Configura o chat SEM histórico (tudo vai na mensagem)
 			const chatConfig: any = {
-				history: chatHistory,
+				history: [], // Histórico vazio - tudo em TOON na mensagem
 				generationConfig: {
 					temperature: 0.7,
 					topK: 40,
@@ -51,7 +68,7 @@ export class GeminiProvider implements AIProvider {
 				},
 			};
 
-			// Só adiciona systemInstruction se fornecido (formato Content)
+			// System prompt continua como texto (não TOON)
 			if (systemPrompt) {
 				chatConfig.systemInstruction = {
 					role: 'system',
@@ -61,11 +78,17 @@ export class GeminiProvider implements AIProvider {
 
 			const chat = this.model.startChat(chatConfig);
 
-			const result = await chat.sendMessage(message);
+			const result = await chat.sendMessage(userMessage);
 			const response = result.response;
 
 			// Retorna texto JSON (sem function calling)
 			const text = response.text();
+			console.log('🤖 [Gemini] Resposta recebida');
+
+			if (!text) {
+				console.warn('⚠️ [Gemini] Resposta vazia!');
+			}
+
 			return { message: text };
 		} catch (error: any) {
 			console.error('❌ Erro ao chamar Gemini SDK:', error);

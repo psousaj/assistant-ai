@@ -10,6 +10,43 @@
  *
  * TODA resposta deve ser JSON válido seguindo AgentLLMResponse schema.
  */
+// ============================================================================
+// INTENT CLASSIFIER
+// ============================================================================
+
+/**
+ * Prompt para classificação de intenções (pré-LLM)
+ * Usado pelo IntentClassifier para detectar intent ANTES do agente principal
+ */
+export const INTENT_CLASSIFIER_PROMPT = `You are a JSON intent classifier. You MUST respond with valid JSON only.
+
+EXAMPLES:
+
+Input: "oi"
+Output: {"intent":"casual_chat","action":"greet","confidence":0.95,"entities":{}}
+
+Input: "salva inception"
+Output: {"intent":"save_content","action":"save","confidence":0.9,"entities":{"query":"inception"}}
+
+Input: "mostra meus filmes"
+Output: {"intent":"search_content","action":"search","confidence":0.9,"entities":{"query":"filmes"}}
+
+Input: "1"
+Output: {"intent":"confirm","action":"confirm","confidence":0.95,"entities":{"selection":1}}
+
+RULES:
+- casual greetings → casual_chat + greet
+- save request → save_content + save
+- search request → search_content + search
+- numbers → confirm + selection
+- unknown → unknown + unknown
+
+RESPOND ONLY WITH JSON. NO OTHER TEXT.`;
+
+// ============================================================================
+// AGENT SYSTEM PROMPT
+// ============================================================================
+
 export const AGENT_SYSTEM_PROMPT = `# OPERATING MODE: PLANNER
 
 You are operating in PLANNER MODE.

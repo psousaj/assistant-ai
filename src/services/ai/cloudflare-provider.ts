@@ -1,16 +1,23 @@
+import OpenAI from 'openai';
+import { encode } from '@toon-format/toon';
 import type { AIProvider, AIResponse, Message } from './types';
 
 /**
- * Provider para Cloudflare Workers AI
+ * Provider para Cloudflare Workers AI usando SDK OpenAI
+ * Usa compatibilidade OpenAI do Workers AI
+ * Ref: https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/
+ *
+ * Histórico convertido para TOON para reduzir tokens de entrada
  */
 export class CloudflareProvider implements AIProvider {
-	private accountId: string;
-	private apiToken: string;
+	private client: OpenAI;
 	private model: string;
 
-	constructor(accountId: string, apiToken: string, model: string = '@cf/meta/llama-3.2-3b-instruct') {
-		this.accountId = accountId;
-		this.apiToken = apiToken;
+	constructor(accountId: string, apiToken: string, model: string = 'llama-4-scout-17b-16e-instruct') {
+		this.client = new OpenAI({
+			apiKey: apiToken,
+			baseURL: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
+		});
 		this.model = model;
 	}
 
@@ -18,37 +25,51 @@ export class CloudflareProvider implements AIProvider {
 		const { message, history = [], systemPrompt } = params;
 
 		try {
-			console.log('☁️ [Cloudflare] Montando prompt');
-
-			// Montar payload baseado no tipo de modelo
-			const payload = this.buildPayload(message, history, systemPrompt);
-
 			console.log(`☁️ [Cloudflare] Enviando para ${this.model}`);
 
-			const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${this.accountId}/ai/run/${this.model}`, {
-				method: 'POST',
-				headers: {
-					Authorization: `Bearer ${this.apiToken}`,
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify(payload),
-			});
+			// Converter histórico para TOON (economiza 30-60% tokens)
+			let contextContent = message;
 
-			if (!response.ok) {
-				const errorText = await response.text();
-				console.error(`Cloudflare AI API error (${response.status}):`, errorText);
-				throw new Error(`Cloudflare AI API error: ${response.status}`);
+			if (history.length > 0) {
+				const historyData = history.map((msg) => ({
+					role: msg.role,
+					content: msg.content,
+				}));
+
+				const toonHistory = encode(historyData, { delimiter: '\t' });
+
+				contextContent = `Histórico da conversa em formato TOON (tab-separated):\n\n\`\`\`toon\n${toonHistory}\n\`\`\`\n\nMensagem atual: ${message}`;
 			}
 
-			const data = (await response.json()) as { result?: { response?: string } | string };
+			// Enviar tudo como uma única mensagem user
+			const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+				{
+					role: 'user',
+					content: contextContent,
+				},
+			];
+
+			// Chamar API usando SDK OpenAI
+			const response = await this.client.chat.completions.create({
+				model: this.model,
+				messages,
+				// System prompt como instructions (parâmetro específico do Workers AI)
+				...(systemPrompt && {
+					// @ts-ignore - instructions não é oficial na tipagem OpenAI mas funciona no Workers AI
+					instructions: systemPrompt,
+				}),
+				// Forçar resposta em JSON
+				response_format: { type: 'json_object' },
+				// Tool choice para reduzir tokens de entrada
+				// @ts-ignore - tool_choice "auto" reduz overhead sem tools definidas
+				tool_choice: 'auto',
+			});
+
+			const text = response.choices[0]?.message?.content || '';
 			console.log('☁️ [Cloudflare] Resposta recebida');
 
-			// A resposta da API Cloudflare vem em formato diferente dependendo do modelo
-			// Para llama-3.1-8b-instruct, a resposta vem em data.result.response
-			const text = (typeof data.result === 'object' && data.result?.response) || (typeof data.result === 'string' ? data.result : '') || '';
-
 			if (!text) {
-				console.warn('⚠️ [Cloudflare] Resposta vazia!', JSON.stringify(data).substring(0, 200));
+				console.warn('⚠️ [Cloudflare] Resposta vazia!');
 			}
 
 			return {
@@ -80,81 +101,5 @@ export class CloudflareProvider implements AIProvider {
 
 	getName(): string {
 		return 'cloudflare';
-	}
-
-	/**
-	 * Constrói payload baseado no tipo de modelo
-	 * - Modelos gpt-oss esperam formato "input"
-	 * - Modelos OpenAI esperam formato "messages"
-	 * - Modelos Llama/Meta esperam formato "prompt"
-	 */
-	private buildPayload(message: string, history: Message[], systemPrompt?: string): any {
-		// Modelo gpt-oss usa formato "input" (text generation)
-		if (this.model.includes('gpt-oss')) {
-			let fullPrompt = '';
-
-			if (systemPrompt) {
-				fullPrompt += `${systemPrompt}\n\n`;
-			}
-
-			// Adicionar histórico
-			if (history.length > 0) {
-				fullPrompt += 'Histórico da conversa:\n';
-				history.forEach((msg) => {
-					const role = msg.role === 'user' ? 'Usuário' : 'Assistente';
-					fullPrompt += `${role}: ${msg.content}\n`;
-				});
-				fullPrompt += '\n';
-			}
-
-			// Adicionar mensagem atual
-			fullPrompt += `Usuário: ${message}\nAssistente:`;
-
-			return { input: fullPrompt };
-		}
-
-		// Modelos OpenAI (@cf/openai/whisper, etc) usam formato "messages"
-		if (this.model.includes('openai') && !this.model.includes('gpt-oss')) {
-			const messages: Array<{ role: string; content: string }> = [];
-
-			if (systemPrompt) {
-				messages.push({ role: 'system', content: systemPrompt });
-			}
-
-			// Adicionar histórico
-			history.forEach((msg) => {
-				messages.push({
-					role: msg.role === 'user' ? 'user' : 'assistant',
-					content: msg.content,
-				});
-			});
-
-			// Adicionar mensagem atual
-			messages.push({ role: 'user', content: message });
-
-			return { messages };
-		}
-
-		// Modelos Llama/Meta usam formato "prompt"
-		let fullPrompt = '';
-
-		if (systemPrompt) {
-			fullPrompt += `${systemPrompt}\n\n`;
-		}
-
-		// Adicionar histórico
-		if (history.length > 0) {
-			fullPrompt += 'Histórico da conversa:\n';
-			history.forEach((msg) => {
-				const role = msg.role === 'user' ? 'Usuário' : 'Assistente';
-				fullPrompt += `${role}: ${msg.content}\n`;
-			});
-			fullPrompt += '\n';
-		}
-
-		// Adicionar mensagem atual
-		fullPrompt += `Usuário: ${message}\nAssistente:`;
-
-		return { prompt: fullPrompt };
 	}
 }
