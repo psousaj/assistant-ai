@@ -79,6 +79,12 @@ export class IntentClassifier {
 	 * Detecta intenção da mensagem do usuário
 	 */
 	async classify(message: string): Promise<IntentResult> {
+		// Valida que message é uma string válida
+		if (!message || typeof message !== 'string') {
+			console.warn('⚠️ [Intent] Mensagem inválida, usando fallback');
+			return this.classifyWithRegex(message || '');
+		}
+
 		// Fallback regex se Cloudflare não configurado
 		if (!this.client) {
 			return this.classifyWithRegex(message);
@@ -104,8 +110,8 @@ export class IntentClassifier {
 			});
 
 			const content = response.choices[0]?.message?.content;
-			if (!content) {
-				console.warn('⚠️ [Intent] Resposta vazia, usando fallback');
+			if (!content || typeof content !== 'string') {
+				console.warn('⚠️ [Intent] Resposta vazia ou inválida, usando fallback');
 				return this.classifyWithRegex(message);
 			}
 
@@ -143,8 +149,10 @@ export class IntentClassifier {
 	 * Fallback com regex (mantém lógica antiga)
 	 */
 	private classifyWithRegex(message: string): IntentResult {
-		console.log(`🎯 [Intent] Usando fallback regex: "${message.substring(0, 50)}..."`);
-		const lowerMsg = message.toLowerCase().trim();
+		// Garante que message é string válida
+		const safeMessage = typeof message === 'string' ? message : '';
+		console.log(`🎯 [Intent] Usando fallback regex: "${safeMessage.substring(0, 50)}..."`);
+		const lowerMsg = safeMessage.toLowerCase().trim();
 
 		// 1. CONFIRMAÇÃO/NEGAÇÃO (mais específico primeiro)
 		if (this.isConfirmation(lowerMsg)) {

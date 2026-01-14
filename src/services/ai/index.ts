@@ -25,7 +25,7 @@ export class AIService {
 		if (env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) {
 			this.providers.set(
 				'cloudflare',
-				new CloudflareProvider(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN, 'llama-4-scout-17b-16e-instruct')
+				new CloudflareProvider(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN, '@cf/meta/llama-4-scout-17b-16e-instruct')
 			);
 			console.log('✅ [AI] Cloudflare Workers AI configurado');
 		} else {

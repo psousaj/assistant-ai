@@ -13,7 +13,7 @@ export class CloudflareProvider implements AIProvider {
 	private client: OpenAI;
 	private model: string;
 
-	constructor(accountId: string, apiToken: string, model: string = 'llama-4-scout-17b-16e-instruct') {
+	constructor(accountId: string, apiToken: string, model: string = '@cf/meta/llama-4-scout-17b-16e-instruct') {
 		this.client = new OpenAI({
 			apiKey: apiToken,
 			baseURL: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
@@ -59,16 +59,14 @@ export class CloudflareProvider implements AIProvider {
 			});
 
 			// Chamar API usando SDK OpenAI
+			// NOTA: response_format pode causar erro 400 em alguns modelos Cloudflare
 			const response = await this.client.chat.completions.create({
 				model: this.model,
 				messages,
-				// Forçar resposta em JSON
-				response_format: { type: 'json_object' },
 			});
 
 			const text = response.choices[0]?.message?.content || '';
 			console.log('☁️ [Cloudflare] Resposta recebida');
-			console.log(response);
 			if (!text) {
 				console.warn('⚠️ [Cloudflare] Resposta vazia!');
 			}
@@ -78,25 +76,8 @@ export class CloudflareProvider implements AIProvider {
 			};
 		} catch (error: any) {
 			console.error('❌ [Cloudflare] Erro:', error);
-
-			// Erro de autenticação
-			if (error?.status === 401 || error?.status === 403) {
-				return {
-					message: '😅 Hmm... estou com problemas de autenticação aqui. Pode tentar novamente mais tarde?',
-				};
-			}
-
-			// Erro de rate limit
-			if (error?.status === 429) {
-				return {
-					message: '😅 Opa, muitas mensagens de uma vez! Dá uma pausa de uns minutinhos e tenta de novo?',
-				};
-			}
-
-			// Erro genérico
-			return {
-				message: '😅 Hmm... estou com problemas pra te responder no momento. Pode tentar novamente mais tarde?',
-			};
+			// Re-throw todos os erros para ativar fallback no AIService
+			throw error;
 		}
 	}
 
