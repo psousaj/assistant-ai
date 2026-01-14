@@ -103,11 +103,11 @@ export class AgentOrchestrator {
 				break;
 
 			case 'handle_confirmation':
-				response = await this.handleConfirmation(context, conversation);
+				response = await this.handleConfirmation(context, conversation, intent);
 				break;
 
 			case 'handle_denial':
-				response = await this.handleDenial(context, conversation);
+				response = await this.handleDenial(context, conversation, intent);
 				break;
 
 			case 'handle_casual':
@@ -307,13 +307,12 @@ export class AgentOrchestrator {
 	/**
 	 * Trata confirmação do usuário
 	 */
-	private async handleConfirmation(context: AgentContext, conversation: any): Promise<AgentResponse> {
+	private async handleConfirmation(context: AgentContext, conversation: any, intent: IntentResult): Promise<AgentResponse> {
 		// Busca contexto anterior
 		const contextData = conversation.context || {};
 
 		// Se há candidatos aguardando seleção
 		if (contextData.candidates && Array.isArray(contextData.candidates)) {
-			const intent = await intentClassifier.classify(context.message);
 			const selection = intent.entities?.selection;
 
 			if (selection && selection <= contextData.candidates.length) {
@@ -331,6 +330,12 @@ export class AgentOrchestrator {
 					title: selected.title,
 					...selected,
 				});
+
+				// Limpar candidatos do contexto após seleção
+				await conversationService.updateState(conversation.id, 'idle', {
+					candidates: null,
+					awaiting_selection: false,
+				} as any);
 
 				return {
 					message: `✅ ${selected.title} salvo!`,
@@ -350,7 +355,13 @@ export class AgentOrchestrator {
 	/**
 	 * Trata negação do usuário
 	 */
-	private async handleDenial(context: AgentContext, conversation: any): Promise<AgentResponse> {
+	private async handleDenial(context: AgentContext, conversation: any, intent: IntentResult): Promise<AgentResponse> {
+		// Limpar candidatos do contexto se houver
+		await conversationService.updateState(conversation.id, 'idle', {
+			candidates: null,
+			awaiting_selection: false,
+		} as any);
+
 		return {
 			message: CANCELLATION_PROMPT,
 			state: 'idle',

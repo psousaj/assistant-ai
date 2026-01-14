@@ -56,13 +56,25 @@ export class ConversationService {
   async updateState(
     conversationId: string,
     state: ConversationState,
-    context?: ConversationContext
+    newContext?: ConversationContext
   ) {
+    // Busca contexto atual para fazer merge
+    const [current] = await db
+      .select({ context: conversations.context })
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+      .limit(1);
+
+    const mergedContext = {
+      ...(current?.context || {}),
+      ...(newContext || {}),
+    };
+
     const [updated] = await db
       .update(conversations)
       .set({
         state,
-        context: context ?? {},
+        context: mergedContext,
         updatedAt: new Date(),
       })
       .where(eq(conversations.id, conversationId))
