@@ -15,6 +15,7 @@ Registro de decisões arquiteturais do Nexo AI.
 - [ADR-009](009-no-mcp-mvp.md) - MCP Server é opcional no MVP
 - [ADR-010](010-sync-enrichment-mvp.md) - Enriquecimento síncrono no MVP
 - [ADR-011](011-deterministic-runtime-control.md) - Controle runtime determinístico (v0.3.0)
+- [ADR-012](012-bun-test-framework.md) - Bun Test como framework de testes
 
 ## Template
 
