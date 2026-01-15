@@ -6,6 +6,10 @@ import type {
   ConversationContext,
   MessageRole,
 } from "@/types";
+import { classifierService } from "@/services/classifier-service";
+import { whatsappService } from "@/services/whatsapp";
+import { collectContextTool } from "@/services/tools";
+import { clarificationMessages } from "@/services/conversation/messageTemplates";
 
 export class ConversationService {
   /**
@@ -150,6 +154,38 @@ export class ConversationService {
       .where(eq(messages.conversationId, conversationId));
     
     return result[0]?.count || 0;
+  }
+
+  /**
+   * Trata mensagens ambíguas solicitando contexto ao usuário
+   */
+  async handleAmbiguousMessage(conversationId: string, message: string) {
+    const detectedType = await classifierService.detectType(message);
+    
+    // Se não detectou tipo ou mensagem muito longa (possível texto complexo sem intenção clara)
+    // E type == 'note' que é o default/fallback
+    if (!detectedType || (detectedType === 'note' && message.length > 50)) {
+      const { clarificationOptions } = await collectContextTool({ message, detectedType });
+      
+      await this.updateState(conversationId, "awaiting_context", {
+        pendingClarification: {
+          originalMessage: message,
+          detectedType,
+          clarificationOptions
+        }
+      });
+
+      // Escolhe uma mensagem aleatória para evitar repetição
+      const msg = clarificationMessages[Math.floor(Math.random() * clarificationMessages.length)];
+      
+      await whatsappService.sendMessage(conversationId, 
+        `${msg}\n${clarificationOptions.map((o, i) => `${i + 1}. ${o}`).join("\n")}`
+      );
+      
+      return true; // Tratado como ambíguo
+    }
+    
+    return false; // Não ambíguo, seguir fluxo normal
   }
 }
 

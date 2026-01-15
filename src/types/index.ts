@@ -5,7 +5,11 @@ export type ItemType = 'movie' | 'tv_show' | 'video' | 'link' | 'note';
 export type ConversationState =
 	| 'idle' // Conversa inativa, pronta para receber comandos
 	| 'processing' // Ação em andamento (evita concorrência)
+	| 'awaiting_context' // Aguardando contexto do usuário
 	| 'awaiting_confirmation' // Aguardando confirmação do usuário
+	| 'enriching' // Buscando informações adicionais
+	| 'saving' // Salvando o conteúdo
+	| 'error' // Estado de erro
 	| 'waiting_close' // Ação finalizada, timer de 3min agendado
 	| 'closed'; // Conversa encerrada, contexto limpo
 
@@ -137,6 +141,11 @@ export interface ConversationContext {
 	candidates?: any[];
 	last_query?: string;
 	detected_type?: ItemType;
+	pendingClarification?: {
+		originalMessage: string;
+		detectedType: string | null;
+		clarificationOptions: string[];
+	};
 
 	// Batch processing
 	batch_queue?: Array<{

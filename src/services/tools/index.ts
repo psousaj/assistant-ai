@@ -258,6 +258,32 @@ export async function save_link(
 }
 
 // ============================================================================
+// CONTEXT TOOLS
+// ============================================================================
+
+/**
+ * Tool: collect_context
+ * Gera opções de clarificação para mensagens ambíguas
+ */
+export async function collectContextTool(input: {
+	message: string;
+	detectedType: string | null;
+}): Promise<{ clarificationOptions: string[] }> {
+	if (!input.detectedType || input.detectedType === 'note') {
+		// Se não detectou nada ou é apenas uma nota (genérico), oferece opções
+		return {
+			clarificationOptions: [
+				'Salvar como nota',
+				'Salvar como filme',
+				'Salvar como série',
+				'Outro (especifique)',
+			],
+		};
+	}
+	return { clarificationOptions: [] };
+}
+
+// ============================================================================
 // SEARCH TOOLS
 // ============================================================================
 

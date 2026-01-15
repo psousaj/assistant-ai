@@ -37,6 +37,7 @@ import {
 import type { ConversationState, AgentLLMResponse, ToolName } from '@/types';
 import { parseJSONFromLLM, isValidAgentResponse } from '@/utils/json-parser';
 import { scheduleConversationClose } from './queue-service';
+import { confirmationMessages, enrichmentMessages } from './conversation/messageTemplates';
 
 export interface AgentContext {
 	userId: string;
@@ -61,13 +62,33 @@ export class AgentOrchestrator {
 	async processMessage(context: AgentContext): Promise<AgentResponse> {
 		console.log('🎯 [Agent] Processando mensagem:', context.message);
 
+		// 0. BUSCAR ESTADO ATUAL
+		const conversation = await conversationService.findOrCreateConversation(context.userId);
+		console.log(`📊 [Agent] Estado atual: ${conversation.state}`);
+
+        // A. TRATAR ESTADO AWAITING_CONTEXT (Clarificação)
+		if (conversation.state === 'awaiting_context') {
+			return this.handleClarificationResponse(context, conversation);
+		}
+
 		// 1. CLASSIFICAR INTENÇÃO (determinístico)
 		const intent = await intentClassifier.classify(context.message);
 		console.log(`🧠 [Agent] Intenção detectada: ${intent.intent} (${intent.confidence})`);
 
-		// 2. BUSCAR ESTADO ATUAL
-		const conversation = await conversationService.findOrCreateConversation(context.userId);
-		console.log(`📊 [Agent] Estado atual: ${conversation.state}`);
+        // B. CHECAR AMBIGUIDADE (se estado for idle)
+		if (conversation.state === 'idle' && intent.intent !== 'casual_chat') {
+            const isAmbiguous = await conversationService.handleAmbiguousMessage(
+                conversation.id,
+                context.message
+            );
+            
+            if (isAmbiguous) {
+                return {
+                    message: null as any, // Mensagem já enviada pelo conversationService
+                    state: 'awaiting_context', // Estado atualizado pelo service
+                };
+            }
+        }
 
 		// 3. DECIDIR AÇÃO BASEADO EM INTENÇÃO + ESTADO
 		const action = this.decideAction(intent, conversation.state);
@@ -132,8 +153,12 @@ export class AgentOrchestrator {
 		});
 
 		// 6. SALVAR MENSAGENS
+        // Se a resposta for nula (ex: handleAmbiguousMessage), não salva resposta vazia
+        // Mas a mensagem do user SEMPRE deve ser salva
 		await conversationService.addMessage(conversation.id, 'user', context.message);
-		await conversationService.addMessage(conversation.id, 'assistant', response.message);
+        if (response.message) {
+		    await conversationService.addMessage(conversation.id, 'assistant', response.message);
+        }
 
 		// 7. AGENDAR FECHAMENTO SE A AÇÃO FINALIZOU
 		// Fecha conversa em 3min se estado voltar para 'open' (idle)
@@ -333,6 +358,15 @@ export class AgentOrchestrator {
 				else if (itemType === 'video') toolName = 'save_video';
 				else if (itemType === 'link') toolName = 'save_link';
 
+                // Mensagem de enrichment
+                // FIX: Usando enrichmentMessages apenas se for um tipo enriquecível
+                if (['movie', 'tv_show'].includes(itemType)) {
+                    const enrichMsg = enrichmentMessages[Math.floor(Math.random() * enrichmentMessages.length)];
+                    // Aqui seria ideal enviar uma mensagem intermediária, mas a arquitetura atual retorna apenas uma resposta
+                    // Vamos apenas logar ou confiar que a tool fará seu trabalho rápido
+                    console.log(`[Validation] ${enrichMsg}`);
+                }
+
 				await executeTool(toolName as any, toolContext, {
 					...selected,
 				});
@@ -352,11 +386,90 @@ export class AgentOrchestrator {
 		}
 
 		// Confirmação genérica
+        const confirmMsg = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)].replace('{type}', 'item');
 		return {
-			message: GENERIC_CONFIRMATION,
+			message: confirmMsg,
 			state: 'idle',
 		};
 	}
+
+    /**
+     * Trata resposta de clarificação
+     */
+    private async handleClarificationResponse(context: AgentContext, conversation: any): Promise<AgentResponse> {
+        const userInput = context.message.toLowerCase();
+        const pendingContext = conversation.context?.pendingClarification;
+
+        if (!pendingContext) {
+            // Estado inválido, reseta
+            return {
+                message: "Ocorreu um erro no fluxo. O que deseja fazer?",
+                state: "idle"
+            };
+        }
+
+        const originalMsg = pendingContext.originalMessage;
+        let selectedTool: ToolName = 'save_note';
+        let itemType = 'note';
+
+        // Mapeia números ou palavras-chave para tipos
+        if (userInput.includes('1') || userInput.includes('not')) {
+            selectedTool = 'save_note';
+            itemType = 'nota';
+        } else if (userInput.includes('2') || userInput.includes('film') || userInput.includes('movie')) {
+            selectedTool = 'save_movie';
+            itemType = 'filme';
+        } else if (userInput.includes('3') || userInput.includes('séri') || userInput.includes('seri')) {
+            selectedTool = 'save_tv_show';
+            itemType = 'série';
+        } else {
+            // Se não entendeu, assume nota mas avisa
+             selectedTool = 'save_note';
+             itemType = 'nota';
+        }
+
+        // Executa a ação
+        const toolContext: ToolContext = {
+            userId: context.userId,
+            conversationId: context.conversationId,
+        };
+
+        // Usa LLM para extrair parâmetros estruturados do texto original se necessário
+        // Por simplificação KISS, vamos tentar salvar direto com o texto original como título/conteúdo
+        // Idealmente, aqui chamaríamos o handleWithLLM forçando a tool específica
+        
+        // Vamos usar handleWithLLM mas injetando um system instruction para usar a tool escolhida
+        // Ou mais simples: chamar executeTool direto com o texto original
+        
+        let result: any;
+        if (selectedTool === 'save_note') {
+             result = await executeTool(selectedTool, toolContext, { content: originalMsg });
+        } else {
+             // Filmes e séries precisam de titulo
+             result = await executeTool(selectedTool, toolContext, { title: originalMsg });
+        }
+
+        // Limpa contexto de clarificação
+        await conversationService.updateState(conversation.id, 'idle', {
+            pendingClarification: null
+        } as any);
+
+        const confirmMsg = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)].replace('{type}', itemType);
+        
+        if (result.success) {
+             return {
+                message: `${confirmMsg} (Salvo: ${originalMsg})`,
+                state: 'idle',
+                toolsUsed: [selectedTool]
+            };
+        } else {
+             return {
+                message: `Erro ao salvar como ${itemType}. Tente novamente.`,
+                state: 'idle'
+            };
+        }
+
+    }
 
 	/**
 	 * Trata negação do usuário
